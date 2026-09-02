@@ -34,6 +34,7 @@ model Session {
 }
 
 model Settings {
-  id              Int     @id @default(1)
+  id              Int     @id @default(autoincrement())
+  shop            String  @unique
   whatsappEnabled Boolean @default(false)
 }
