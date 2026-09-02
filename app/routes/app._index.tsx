@@ -4,93 +4,84 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { useFetcher } from "react-router";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-
-  return null;
-};
-
-export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
+
   const response = await admin.graphql(
     `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
+      query getLatestOrder {
+        orders(first: 1, sortKey: CREATED_AT, reverse: true) {
+          edges {
+            node {
+              id
+              name
+              email
+              phone
+              customer {
+                firstName
+                lastName
+                phone
               }
             }
           }
         }
       }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-        },
-      },
-    },
   );
+
   const responseJson = await response.json();
+  const latestOrder = responseJson.data?.orders?.edges?.[0]?.node ?? null;
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
-
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
+  const settings = await db.settings.upsert({
+    where: { id: 1 },
+    update: {},
+    create: {
+      id: 1,
+      whatsappEnabled: false,
     },
-  );
-
-  const variantResponseJson = await variantResponse.json();
+  });
 
   return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
+    latestOrder,
+    whatsappEnabled: settings.whatsappEnabled,
+  };
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  await authenticate.admin(request);
+
+  const formData = await request.formData();
+  const whatsappEnabled = formData.get("whatsappEnabled") === "true";
+
+  await db.settings.upsert({
+    where: { id: 1 },
+    update: {
+      whatsappEnabled,
+    },
+    create: {
+      id: 1,
+      whatsappEnabled,
+    },
+  });
+
+  return {
+    whatsappEnabled,
   };
 };
 
 export default function Index() {
   const fetcher = useFetcher<typeof action>();
-
+  const { latestOrder, whatsappEnabled } = useLoaderData<typeof loader>();
   const shopify = useAppBridge();
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
+  const settingsFetcher = useFetcher<typeof action>();
 
   useEffect(() => {
     if (fetcher.data?.product?.id) {
@@ -102,6 +93,50 @@ export default function Index() {
 
   return (
     <s-page heading="Shopify app template">
+      <s-section heading="WhatsApp Notifications">
+        <s-stack direction="inline" gap="base" align="center">
+          <s-text>
+            Order notifications are currently{" "}
+            <strong>{whatsappEnabled ? "ON" : "OFF"}</strong>
+          </s-text>
+
+          <s-button
+            variant={whatsappEnabled ? "secondary" : "primary"}
+            onClick={() => {
+              settingsFetcher.submit(
+                {
+                  whatsappEnabled: whatsappEnabled ? "false" : "true",
+                },
+                { method: "POST" },
+              );
+            }}
+            {...(settingsFetcher.state !== "idle" ? { loading: true } : {})}
+          >
+            {whatsappEnabled ? "Turn OFF" : "Turn ON"}
+          </s-button>
+        </s-stack>
+      </s-section>
+      <s-section heading="Latest order">
+        {latestOrder ? (
+          <>
+            <s-paragraph>Order: {latestOrder.name}</s-paragraph>
+
+            <s-paragraph>
+              Customer: {latestOrder.customer?.firstName}{" "}
+              {latestOrder.customer?.lastName}
+            </s-paragraph>
+
+            <s-paragraph>
+              Phone:{" "}
+              {latestOrder.phone || latestOrder.customer?.phone || "No phone"}
+            </s-paragraph>
+
+            <s-paragraph>Email: {latestOrder.email || "No email"}</s-paragraph>
+          </>
+        ) : (
+          <s-paragraph>No orders found yet in this store.</s-paragraph>
+        )}
+      </s-section>
       <s-button slot="primary-action" onClick={generateProduct}>
         Generate a product
       </s-button>

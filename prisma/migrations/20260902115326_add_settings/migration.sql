@@ -1,0 +1,5 @@
+-- CreateTable
+CREATE TABLE "Settings" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT DEFAULT 1,
+    "whatsappEnabled" BOOLEAN NOT NULL DEFAULT false
+);
