@@ -6,7 +6,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { payload, topic, shop } = await authenticate.webhook(request);
 
   const settings = await db.settings.findUnique({
-    where: { id: 1 },
+    where: { id: shop },
   });
 
   if (!settings?.whatsappEnabled) {

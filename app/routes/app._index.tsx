@@ -11,8 +11,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
-
+  const { admin, session } = await authenticate.admin(request);
   const response = await admin.graphql(
     `#graphql
       query getLatestOrder {
@@ -38,10 +37,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const latestOrder = responseJson.data?.orders?.edges?.[0]?.node ?? null;
 
   const settings = await db.settings.upsert({
-    where: { id: 1 },
+    where: { shop: session.shop },
     update: {},
     create: {
-      id: 1,
+      shop: session.shop,
       whatsappEnabled: false,
     },
   });
@@ -53,18 +52,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
   const formData = await request.formData();
+
   const whatsappEnabled = formData.get("whatsappEnabled") === "true";
 
   await db.settings.upsert({
-    where: { id: 1 },
+    where: { shop: session.shop },
     update: {
       whatsappEnabled,
     },
     create: {
-      id: 1,
+      shop: session.shop,
       whatsappEnabled,
     },
   });
