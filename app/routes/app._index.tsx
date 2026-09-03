@@ -90,20 +90,20 @@ export default function Index() {
             <strong>{currentEnabled ? "ON" : "OFF"}</strong>
           </s-text>
 
-          <s-button
-            variant={currentEnabled ? "secondary" : "primary"}
-            onClick={() => {
-              settingsFetcher.submit(
-                {
-                  whatsappEnabled: currentEnabled ? "false" : "true",
-                },
-                { method: "POST" },
-              );
-            }}
-            {...(settingsFetcher.state !== "idle" ? { loading: true } : {})}
-          >
-            {currentEnabled ? "Turn OFF" : "Turn ON"}
-          </s-button>
+          <settingsFetcher.Form method="post">
+            <input
+              type="hidden"
+              name="whatsappEnabled"
+              value={currentEnabled ? "false" : "true"}
+            />
+            <s-button
+              type="submit"
+              variant={currentEnabled ? "secondary" : "primary"}
+              {...(settingsFetcher.state !== "idle" ? { loading: true } : {})}
+            >
+              {currentEnabled ? "Turn OFF" : "Turn ON"}
+            </s-button>
+          </settingsFetcher.Form>
         </s-stack>
       </s-section>
 
