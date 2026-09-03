@@ -72,12 +72,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function Index() {
   const { latestOrder, whatsappEnabled } = useLoaderData<typeof loader>();
-  const settingsFetcher = useFetcher<typeof action>();
+  const fetcher = useFetcher<typeof action>();
 
   const currentEnabled =
-    settingsFetcher.formData?.get("whatsappEnabled") === "true"
+    fetcher.formData?.get("whatsappEnabled") === "true"
       ? true
-      : settingsFetcher.formData?.get("whatsappEnabled") === "false"
+      : fetcher.formData?.get("whatsappEnabled") === "false"
         ? false
         : whatsappEnabled;
 
@@ -90,20 +90,29 @@ export default function Index() {
             <strong>{currentEnabled ? "ON" : "OFF"}</strong>
           </s-text>
 
-          <settingsFetcher.Form method="post">
-            <input
-              type="hidden"
-              name="whatsappEnabled"
-              value={currentEnabled ? "false" : "true"}
-            />
-            <s-button
-              type="submit"
-              variant={currentEnabled ? "secondary" : "primary"}
-              {...(settingsFetcher.state !== "idle" ? { loading: true } : {})}
-            >
-              {currentEnabled ? "Turn OFF" : "Turn ON"}
-            </s-button>
-          </settingsFetcher.Form>
+          <button
+            type="button"
+            onClick={() => {
+              const formData = new FormData();
+              formData.append(
+                "whatsappEnabled",
+                currentEnabled ? "false" : "true",
+              );
+              fetcher.submit(formData, { method: "POST" });
+            }}
+            style={{
+              padding: "8px 16px",
+              cursor: "pointer",
+              borderRadius: "4px",
+              border: "1px solid #ccc",
+            }}
+          >
+            {fetcher.state !== "idle"
+              ? "Saving..."
+              : currentEnabled
+                ? "Turn OFF"
+                : "Turn ON"}
+          </button>
         </s-stack>
       </s-section>
 
