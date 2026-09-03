@@ -2,7 +2,7 @@
 
 client_id = "475273c59299058d71de9594e91f33da"
 name = "tanoti-whatsapp-v2"
-application_url = "https://example.com"
+application_url = "https://whatsapp.tanotiofficial.com"
 embedded = true
 
 [build]
@@ -36,4 +36,4 @@ api_version = "2026-10"
 scopes = "write_products,read_orders,read_customers"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://whatsapp.tanotiofficial.com/api/auth" ]
