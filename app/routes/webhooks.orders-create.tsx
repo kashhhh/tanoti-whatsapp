@@ -18,6 +18,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const order = payload;
 
+  const address = order.shipping_address
+    ? [
+        order.shipping_address.address1,
+        order.shipping_address.address2,
+        order.shipping_address.city,
+        order.shipping_address.province,
+        order.shipping_address.zip,
+        order.shipping_address.country,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : "";
+
+  const productsList = (order.line_items ?? [])
+    .map((item: any) => `${item.title} | ${item.variant_title ?? "-"}`)
+    .join("\n");
+
   const orderData = {
     orderId: order.id,
     orderNumber: order.name,
@@ -26,9 +43,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       : "Customer",
     phone: order.phone ?? order.customer?.phone ?? null,
     email: order.email ?? order.customer?.email ?? null,
+    address: address,
+    productsList,
   };
-
-  console.log("ORDER DATA:", order);
 
   console.log("ORDER DATA:");
   console.log(orderData);
@@ -42,7 +59,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       orderData.phone,
       orderData.customerName,
       orderData.orderNumber,
-      "5-7 business days",
+      orderData.productsList,
+      orderData.address,
     );
 
     console.log("WHATSAPP SENT");

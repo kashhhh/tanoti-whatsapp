@@ -2,7 +2,8 @@ export async function sendWhatsAppMessage(
   phone: string,
   customerName: string,
   orderNumber: string,
-  delivery: string,
+  products: string,
+  address: string
 ) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -20,7 +21,7 @@ export async function sendWhatsAppMessage(
         to: phone,
         type: "template",
         template: {
-          name: "order_confirmed_test",
+          name: "order_confirmation_test",
           language: {
             code: "en_US",
           },
@@ -30,7 +31,8 @@ export async function sendWhatsAppMessage(
               parameters: [
                 { type: "text", text: customerName },
                 { type: "text", text: orderNumber },
-                // { type: "text", text: delivery },
+                { type: "text", text: products },
+                { type: "text", text: address },
               ],
             },
           ],
