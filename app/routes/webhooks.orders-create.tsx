@@ -28,6 +28,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     email: order.email ?? order.customer?.email ?? null,
   };
 
+  console.log("ORDER DATA:", order);
+
   console.log("ORDER DATA:");
   console.log(orderData);
 

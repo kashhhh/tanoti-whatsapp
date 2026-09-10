@@ -19,27 +19,21 @@ export async function sendWhatsAppMessage(
         messaging_product: "whatsapp",
         to: phone,
         type: "template",
-        // template: {
-        //   name: "jaspers_market_order_confirmation_v1",
-        //   language: {
-        //     code: "en_US",
-        //   },
-        //   components: [
-        //     {
-        //       type: "body",
-        //       parameters: [
-        //         { type: "text", text: customerName },
-        //         { type: "text", text: orderNumber },
-        //         { type: "text", text: delivery },
-        //       ],
-        //     },
-        //   ],
-        // },
         template: {
-          name: "hello_world",
+          name: "order_confirmed_test",
           language: {
             code: "en_US",
           },
+          components: [
+            {
+              type: "body",
+              parameters: [
+                { type: "text", text: customerName },
+                { type: "text", text: orderNumber },
+                // { type: "text", text: delivery },
+              ],
+            },
+          ],
         },
       }),
     },
