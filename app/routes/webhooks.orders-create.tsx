@@ -33,7 +33,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const productsList = (order.line_items ?? [])
     .map((item: any) => `${item.title} | ${item.variant_title ?? "-"}`)
-    .join("\n");
+    .join(" • ");
 
   const orderData = {
     orderId: order.id,
