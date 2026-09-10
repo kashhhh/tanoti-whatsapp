@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { orderDeliveredMessage } from "app/services/whatsapp.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { payload, topic, shop } = await authenticate.webhook(request);
@@ -15,13 +16,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
   console.log(`Received ${topic} webhook for ${shop}`);
   console.log("ORDER FULFILLED:");
-  console.log({
+  const orderData = {
     orderNumber: payload.name,
     customerName: payload.customer?.first_name,
     phone: payload.customer?.phone,
-    trackingNumber: payload.fulfillments?.[0]?.tracking_number,
-    trackingUrl: payload.fulfillments?.[0]?.tracking_url,
-  });
+  };
+
+  if (orderData.phone) {
+    await orderDeliveredMessage(
+      orderData.phone,
+      orderData.customerName,
+      orderData.orderNumber,
+    );
+
+    console.log("WHATSAPP SENT");
+  }
 
   return new Response();
 };
