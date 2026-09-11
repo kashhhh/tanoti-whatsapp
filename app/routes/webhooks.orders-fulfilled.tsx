@@ -22,14 +22,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     phone: payload.customer?.phone,
   };
 
-  if (orderData.phone) {
-    await orderDeliveredMessage(
-      orderData.phone,
-      orderData.customerName,
-      orderData.orderNumber,
-    );
+  console.log(orderData, payload);
 
-    console.log("WHATSAPP SENT");
+  if (orderData.phone) {
+    // await orderDeliveredMessage(
+    //   orderData.phone,
+    //   orderData.customerName,
+    //   orderData.orderNumber,
+    // );
+
+    console.log("WHATSAPP SENT loop");
   }
 
   return new Response();
