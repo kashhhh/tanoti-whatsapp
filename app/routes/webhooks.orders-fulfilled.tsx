@@ -19,7 +19,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const orderData = {
     orderNumber: payload.name,
     customerName: payload.customer?.first_name,
-    phone: payload.customer?.phone,
+    phone: payload.customer?.default_address?.phone,
   };
 
   console.log(orderData, payload);
