@@ -28,12 +28,16 @@ api_version = "2026-10"
   topics = [ "orders/fulfilled" ]
 
   [[webhooks.subscriptions]]
+  uri = "/webhooks/fulfillment-events-create"
+  topics = [ "fulfillment_events/create" ]
+
+  [[webhooks.subscriptions]]
   uri = "/webhooks/orders-cancelled"
   topics = [ "orders/cancelled" ]
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products,read_orders,read_customers"
+scopes = "write_products,read_orders,read_customers,read_fulfillments"
 
 [auth]
 redirect_urls = [ "https://whatsapp.tanotiofficial.com/api/auth" ]
