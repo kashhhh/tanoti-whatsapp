@@ -184,13 +184,11 @@ export async function checkTemplateExists(templateName: string) {
 
   const response = await fetch(
     `https://graph.facebook.com/v23.0/${wabaId}/message_templates?name=${encodeURIComponent(templateName)}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    },
+    { headers: { Authorization: `Bearer ${token}` } },
   );
 
   const data = await response.json();
-  const template = data.data?.[0];
+  const template = data.data?.find((t: any) => t.name === templateName);
 
   if (!template) {
     return { exists: false, approved: false };
