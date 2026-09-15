@@ -174,7 +174,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
     const membersJson = await membersResponse.json();
     const members = membersJson.data?.customerSegmentMembers?.edges ?? [];
-
+    console.log("MEMBERS:", members);
     let sent = 0;
     let failed = 0;
     let skipped = 0;

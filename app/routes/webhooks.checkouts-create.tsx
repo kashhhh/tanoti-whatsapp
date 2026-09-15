@@ -7,25 +7,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const settings = await db.settings.findUnique({ where: { shop } });
   if (!settings?.whatsappEnabled) {
-    console.log("WhatsApp notifications are OFF. Skipping abandoned checkout tracking.");
+    console.log(
+      "WhatsApp notifications are OFF. Skipping abandoned checkout tracking.",
+    );
     return new Response();
   }
 
-  const phone = payload.phone ?? payload.customer?.phone ?? payload.shipping_address?.phone ?? null;
+  const phone =
+    payload.phone ??
+    payload.customer?.phone ??
+    payload.shipping_address?.phone ??
+    null;
   const customerName = payload.customer?.first_name ?? "there";
   const checkoutUrl = payload.abandoned_checkout_url ?? null;
   const lineItems = payload.line_items ?? [];
   const checkoutToken = payload.token;
 
   console.log("CHECKOUT CREATE:", { checkoutToken, phone, checkoutUrl });
-
+  console.log(payload);
   if (!phone || !checkoutUrl || lineItems.length === 0 || !checkoutToken) {
     console.log("Missing phone, checkout URL, token, or line items. Skipping.");
     return new Response();
   }
 
   const orderDetails = lineItems
-    .map((item: any) => `${item.title}${item.variant_title ? " (" + item.variant_title + ")" : ""}`)
+    .map(
+      (item: any) =>
+        `${item.title}${item.variant_title ? " (" + item.variant_title + ")" : ""}`,
+    )
     .join(", ");
 
   let imageUrl = null;
