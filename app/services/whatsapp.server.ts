@@ -229,3 +229,52 @@ export async function sendWhatsAppTemplateNoParams(
   const data = await response.json();
   return { success: response.ok, data };
 }
+
+export async function sendAbandonedCartTemplate(
+  phone: string,
+  templateName: string,
+  imageUrl: string,
+  customerName: string,
+  orderDetails: string,
+  checkoutUrl: string,
+) {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  const response = await fetch(
+    `https://graph.facebook.com/v23.0/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: phone,
+        type: "template",
+        template: {
+          name: templateName,
+          language: { code: "en_US" },
+          components: [
+            {
+              type: "header",
+              parameters: [{ type: "image", image: { link: imageUrl } }],
+            },
+            {
+              type: "body",
+              parameters: [
+                { type: "text", text: customerName },
+                { type: "text", text: orderDetails },
+                { type: "text", text: checkoutUrl },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+  );
+
+  const data = await response.json();
+  return { success: response.ok, data };
+}

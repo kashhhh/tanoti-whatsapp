@@ -32,3 +32,17 @@ model Settings {
   shop            String  @unique
   whatsappEnabled Boolean @default(false)
 }
+
+model AbandonedCheckout {
+  id            Int       @id @default(autoincrement())
+  shop          String
+  checkoutToken String    @unique
+  phone         String
+  customerName  String
+  orderDetails  String
+  imageUrl      String?
+  checkoutUrl   String
+  createdAt     DateTime  @default(now())
+  converted     Boolean   @default(false)
+  messaged      Boolean   @default(false)
+}

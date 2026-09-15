@@ -11,6 +11,7 @@ import {
   checkTemplateExists,
   sendWhatsAppTemplateNoParams,
 } from "app/services/whatsapp.server";
+import { useEffect, useState } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -73,7 +74,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
+  if (intent === "checkSegment") {
+    const templateName = (formData.get("templateName") as string)?.trim();
+    const segmentId = formData.get("segmentId") as string;
 
+    if (!templateName || !segmentId) {
+      return {
+        intent,
+        ok: false,
+        message: "Template name and segment are required.",
+      };
+    }
+
+    const { exists, approved } = await checkTemplateExists(templateName);
+    if (!exists) {
+      return {
+        intent,
+        ok: false,
+        message: `Template "${templateName}" not found.`,
+      };
+    }
+    if (!approved) {
+      return {
+        intent,
+        ok: false,
+        message: `Template "${templateName}" is not approved yet.`,
+      };
+    }
+
+    const { admin } = await authenticate.admin(request);
+    const countResponse = await admin.graphql(
+      `#graphql
+      query getSegmentCount($segmentId: ID) {
+        customerSegmentMembers(segmentId: $segmentId, first: 1) {
+          totalCount
+        }
+      }`,
+      { variables: { segmentId } },
+    );
+    const countJson = await countResponse.json();
+    const count = countJson.data?.customerSegmentMembers?.totalCount ?? 0;
+
+    return { intent, ok: true, count, segmentId, templateName };
+  }
   if (intent === "toggleWhatsapp") {
     const whatsappEnabled = formData.get("whatsappEnabled") === "true";
     await db.settings.upsert({
@@ -164,6 +207,25 @@ export default function Index() {
   const fetcher = useFetcher<typeof action>();
   const marketingFetcher = useFetcher<typeof action>();
 
+  const [pendingSend, setPendingSend] = useState<{
+    segmentId: string;
+    templateName: string;
+    count: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (
+      marketingFetcher.data?.intent === "checkSegment" &&
+      marketingFetcher.data.ok
+    ) {
+      setPendingSend({
+        segmentId: marketingFetcher.data.segmentId,
+        templateName: marketingFetcher.data.templateName,
+        count: marketingFetcher.data.count,
+      });
+    }
+  }, [marketingFetcher.data]);
+
   const currentEnabled =
     fetcher.formData?.get("whatsappEnabled") === "true"
       ? true
@@ -252,7 +314,7 @@ export default function Index() {
               const fields = e.target
                 .closest("s-section")
                 .querySelectorAll("s-select, s-text-field");
-              const data: Record<string, string> = { intent: "sendMarketing" };
+              const data: Record<string, string> = { intent: "checkSegment" };
               fields.forEach((el: any) => {
                 if (el.name) data[el.name] = el.value;
               });
@@ -265,6 +327,43 @@ export default function Index() {
 
           {marketingFetcher.data?.intent === "sendMarketing" && (
             <s-text>{marketingFetcher.data.message}</s-text>
+          )}
+          {marketingFetcher.data?.intent === "checkSegment" &&
+            !marketingFetcher.data.ok && (
+              <s-text tone="critical">{marketingFetcher.data.message}</s-text>
+            )}
+          {pendingSend && (
+            <s-banner tone="warning">
+              <s-stack direction="block" gap="tight">
+                <s-text>
+                  This will send "{pendingSend.templateName}" to{" "}
+                  <strong>{pendingSend.count}</strong> customers. This cannot be
+                  undone.
+                </s-text>
+                <s-stack direction="inline" gap="base">
+                  <s-button
+                    variant="primary"
+                    tone="critical"
+                    onClick={() => {
+                      marketingFetcher.submit(
+                        {
+                          intent: "sendMarketing",
+                          templateName: pendingSend.templateName,
+                          segmentId: pendingSend.segmentId,
+                        },
+                        { method: "POST" },
+                      );
+                      setPendingSend(null);
+                    }}
+                  >
+                    Confirm Send
+                  </s-button>
+                  <s-button onClick={() => setPendingSend(null)}>
+                    Cancel
+                  </s-button>
+                </s-stack>
+              </s-stack>
+            </s-banner>
           )}
         </s-stack>
       </s-section>

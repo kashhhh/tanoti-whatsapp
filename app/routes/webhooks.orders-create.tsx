@@ -5,6 +5,12 @@ import db from "../db.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { payload, topic, shop } = await authenticate.webhook(request);
+  if (payload.checkout_token) {
+    await db.abandonedCheckout.updateMany({
+      where: { checkoutToken: payload.checkout_token },
+      data: { converted: true },
+    });
+  }
   const settings = await db.settings.findUnique({
     where: { shop },
   });
@@ -46,8 +52,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     address: address,
     productsList,
   };
-
-
 
   if (orderData.phone) {
     await sendWhatsAppMessage(
