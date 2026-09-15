@@ -156,6 +156,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     const { admin } = await authenticate.admin(request);
+
     const membersResponse = await admin.graphql(
       `#graphql
       query getSegmentMembers($segmentId: ID) {
@@ -163,9 +164,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           edges {
             node {
               id
-              defaultPhoneNumber { phoneNumber }
-              customer {
-                defaultAddress { phone }
+              defaultPhoneNumber {
+                phoneNumber
               }
             }
           }
@@ -175,19 +175,53 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
     const membersJson = await membersResponse.json();
     const members = membersJson.data?.customerSegmentMembers?.edges ?? [];
-    console.log("MEMBERS:", members);
+
+    // Fallback: fetch address phone for members missing defaultPhoneNumber
+    const needsFallback = members.filter(
+      (e: any) => !e.node.defaultPhoneNumber?.phoneNumber,
+    );
+    const fallbackMap: Record<string, string> = {};
+
+    if (needsFallback.length > 0) {
+      const ids = needsFallback.map(
+        (e: any) => `gid://shopify/Customer/${e.node.id.split("/").pop()}`,
+      );
+      const custResponse = await admin.graphql(
+        `#graphql
+        query getFallbackPhones($ids: [ID!]!) {
+          nodes(ids: $ids) {
+            ... on Customer {
+              id
+              defaultAddress {
+                phone
+              }
+            }
+          }
+        }`,
+        { variables: { ids } },
+      );
+      const custJson = await custResponse.json();
+      for (const node of custJson.data?.nodes ?? []) {
+        if (node?.defaultAddress?.phone) {
+          fallbackMap[node.id] = node.defaultAddress.phone;
+        }
+      }
+    }
+
     let sent = 0;
     let failed = 0;
     let skipped = 0;
 
     for (const edge of members) {
+      const customerId = `gid://shopify/Customer/${edge.node.id.split("/").pop()}`;
       const phone =
-        edge.node.defaultPhoneNumber?.phoneNumber ??
-        edge.node.customer?.defaultAddress?.phone;
+        edge.node.defaultPhoneNumber?.phoneNumber ?? fallbackMap[customerId];
+
       if (!phone) {
         skipped++;
         continue;
       }
+
       const result = await sendWhatsAppTemplateNoParams(phone, templateName);
       if (result.success) sent++;
       else failed++;
