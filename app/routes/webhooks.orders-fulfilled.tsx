@@ -26,8 +26,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     trackingUrl: payload.fulfillments?.[0]?.tracking_url || "",
   };
 
-  console.log(orderData, payload);
-
   if (orderData.phone) {
     await orderPackedMessage(
       orderData.phone,

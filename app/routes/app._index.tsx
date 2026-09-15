@@ -9,7 +9,6 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import {
   checkTemplateExists,
-  checkTemplateExists,
   sendWhatsAppTemplateNoParams,
 } from "app/services/whatsapp.server";
 
@@ -232,18 +231,12 @@ export default function Index() {
 
       <s-section heading="WhatsApp Marketing">
         <s-stack direction="block" gap="base">
-          <s-select
-            label="Customer segment"
-            name="segmentId"
-            onChange={(e: any) =>
-              marketingFetcher.formData?.set?.("segmentId", e.target.value)
-            }
-          >
-            <option value="">Select a segment</option>
+          <s-select label="Customer segment" name="segmentId">
+            <s-option value="">Select a segment</s-option>
             {segments.map((seg: any) => (
-              <option key={seg.id} value={seg.id}>
+              <s-option key={seg.id} value={seg.id}>
                 {seg.name}
-              </option>
+              </s-option>
             ))}
           </s-select>
 
@@ -256,11 +249,11 @@ export default function Index() {
           <s-button
             variant="primary"
             onClick={(e: any) => {
-              const form = e.target
+              const fields = e.target
                 .closest("s-section")
-                .querySelectorAll("input, select");
+                .querySelectorAll("s-select, s-text-field");
               const data: Record<string, string> = { intent: "sendMarketing" };
-              form.forEach((el: any) => {
+              fields.forEach((el: any) => {
                 if (el.name) data[el.name] = el.value;
               });
               marketingFetcher.submit(data, { method: "POST" });

@@ -47,12 +47,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     productsList,
   };
 
-  console.log("ORDER DATA:");
-  console.log(orderData);
 
-  console.log("Phone:", orderData.phone);
-
-  console.log("ABOUT TO SEND WHATSAPP");
 
   if (orderData.phone) {
     await sendWhatsAppMessage(
@@ -63,7 +58,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       orderData.address,
     );
 
-    console.log("WHATSAPP SENT");
+    console.log("WHATSAPP SENT for ORDER CONFIRMATION");
   }
 
   return new Response();

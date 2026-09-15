@@ -57,8 +57,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     phone: order.phone || order.shippingAddress?.phone,
   };
 
-  console.log("ORDER DELIVERED:", orderData);
-
   if (orderData.phone) {
     await orderDeliveredMessage(orderData.phone, orderData.orderNumber);
     console.log("WHATSAPP SENT — ORDER DELIVERED MESSAGE");
