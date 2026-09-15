@@ -163,8 +163,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           edges {
             node {
               id
-              defaultPhoneNumber {
-                phoneNumber
+              defaultPhoneNumber { phoneNumber }
+              customer {
+                defaultAddress { phone }
               }
             }
           }
@@ -180,7 +181,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let skipped = 0;
 
     for (const edge of members) {
-      const phone = edge.node.defaultPhoneNumber?.phoneNumber;
+      const phone =
+        edge.node.defaultPhoneNumber?.phoneNumber ??
+        edge.node.customer?.defaultAddress?.phone;
       if (!phone) {
         skipped++;
         continue;
