@@ -32,6 +32,6 @@ app.all(
 );
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+app.listen(port, "127.0.0.1", () => {
   console.log(`[server] http://localhost:${port}`);
 });
