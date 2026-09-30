@@ -24,7 +24,7 @@ if (fs.existsSync("public")) {
 app.use(morgan("tiny"));
 
 app.all(
-  "*",
+  "/{*splat}",
   createRequestHandler({
     build,
     mode: process.env.NODE_ENV,
