@@ -8,8 +8,9 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
 import {
-  checkTemplateExists,
-  sendWhatsAppTemplateNoParams,
+  prepareWhatsAppTemplate,
+  sendWhatsAppTemplate,
+  type WhatsAppTemplatePayload,
 } from "app/services/whatsapp.server";
 import { useEffect, useState } from "react";
 
@@ -77,28 +78,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "checkSegment") {
     const templateName = (formData.get("templateName") as string)?.trim();
     const segmentId = formData.get("segmentId") as string;
+    const imageUrl = String(formData.get("imageUrl") ?? "").trim();
 
     if (!templateName || !segmentId) {
       return {
-        intent,
-        ok: false,
+        intent: "checkSegment" as const,
+        ok: false as const,
         message: "Template name and segment are required.",
       };
     }
 
-    const { exists, approved } = await checkTemplateExists(templateName);
-    if (!exists) {
+    let template: WhatsAppTemplatePayload;
+    try {
+      template = await prepareWhatsAppTemplate(templateName, imageUrl);
+    } catch (error) {
       return {
-        intent,
-        ok: false,
-        message: `Template "${templateName}" not found.`,
-      };
-    }
-    if (!approved) {
-      return {
-        intent,
-        ok: false,
-        message: `Template "${templateName}" is not approved yet.`,
+        intent: "checkSegment" as const,
+        ok: false as const,
+        message: error instanceof Error ? error.message : "Could not validate the WhatsApp template. Please try again.",
       };
     }
 
@@ -115,7 +112,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const countJson = await countResponse.json();
     const count = countJson.data?.customerSegmentMembers?.totalCount ?? 0;
 
-    return { intent, ok: true, count, segmentId, templateName };
+    return { intent: "checkSegment" as const, ok: true as const, count, segmentId, templateName, imageUrl, language: template.language.code };
   }
   if (intent === "toggleWhatsapp") {
     const whatsappEnabled = formData.get("whatsappEnabled") === "true";
@@ -124,34 +121,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       update: { whatsappEnabled },
       create: { shop: session.shop, whatsappEnabled },
     });
-    return { intent, whatsappEnabled };
+    return { intent: "toggleWhatsapp" as const, whatsappEnabled };
   }
 
   if (intent === "sendMarketing") {
     const templateName = (formData.get("templateName") as string)?.trim();
     const segmentId = formData.get("segmentId") as string;
+    const imageUrl = String(formData.get("imageUrl") ?? "").trim();
 
     if (!templateName || !segmentId) {
       return {
-        intent,
+        intent: "sendMarketing" as const,
         ok: false,
         message: "Template name and segment are required.",
       };
     }
 
-    const { exists, approved } = await checkTemplateExists(templateName);
-    if (!exists) {
+    let template: WhatsAppTemplatePayload;
+    try {
+      template = await prepareWhatsAppTemplate(templateName, imageUrl);
+    } catch (error) {
       return {
-        intent,
+        intent: "sendMarketing" as const,
         ok: false,
-        message: `Template "${templateName}" not found.`,
-      };
-    }
-    if (!approved) {
-      return {
-        intent,
-        ok: false,
-        message: `Template "${templateName}" is not approved yet.`,
+        message: error instanceof Error ? error.message : "Could not validate the WhatsApp template. Please try again.",
       };
     }
 
@@ -211,6 +204,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let sent = 0;
     let failed = 0;
     let skipped = 0;
+    const errors = new Set<string>();
 
     for (const edge of members) {
       const customerId = `gid://shopify/Customer/${edge.node.id.split("/").pop()}`;
@@ -222,16 +216,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         continue;
       }
 
-      const result = await sendWhatsAppTemplateNoParams(phone, templateName);
-      if (result.success) sent++;
-      else failed++;
+      try {
+        const result = await sendWhatsAppTemplate(phone, template);
+        if (result.success) sent++;
+        else {
+          failed++;
+          errors.add(result.error ?? "WhatsApp request failed.");
+        }
+      } catch (error) {
+        failed++;
+        errors.add(error instanceof Error ? error.message : "Could not contact WhatsApp.");
+      }
       await new Promise((r) => setTimeout(r, 300));
     }
 
     return {
-      intent,
-      ok: true,
-      message: `Sent: ${sent}, Failed: ${failed}, Skipped (no phone): ${skipped}`,
+      intent: "sendMarketing" as const,
+      ok: failed === 0,
+      message: `Accepted by WhatsApp: ${sent}, Failed: ${failed}, Skipped (no phone): ${skipped}. ${[...errors].slice(0, 3).join(" ")}${sent > 0 ? " Delivery is confirmed separately by WhatsApp status updates." : ""}`,
     };
   }
 
@@ -247,6 +249,8 @@ export default function Index() {
   const [pendingSend, setPendingSend] = useState<{
     segmentId: string;
     templateName: string;
+    imageUrl: string;
+    language: string;
     count: number;
   } | null>(null);
 
@@ -258,6 +262,8 @@ export default function Index() {
       setPendingSend({
         segmentId: marketingFetcher.data.segmentId,
         templateName: marketingFetcher.data.templateName,
+        imageUrl: marketingFetcher.data.imageUrl,
+        language: marketingFetcher.data.language,
         count: marketingFetcher.data.count,
       });
     }
@@ -273,7 +279,7 @@ export default function Index() {
   return (
     <s-page heading="Tanoti WhatsApp Notifications">
       <s-section heading="WhatsApp Notifications">
-        <s-stack direction="inline" gap="base" align="center">
+        <s-stack direction="inline" gap="base" alignItems="center">
           <s-text>
             Order notifications are currently{" "}
             <strong>{currentEnabled ? "ON" : "OFF"}</strong>
@@ -342,12 +348,23 @@ export default function Index() {
           <s-text-field
             label="Template name"
             name="templateName"
-            placeholder="e.g. abc-123"
+            placeholder="e.g. festive_clearance"
           />
+
+          <s-text-field
+            label="Header image URL"
+            name="imageUrl"
+            placeholder="https://your-store.com/sale-image.jpg"
+          />
+          <s-text>
+            Required for templates with an image header. Use a public link to the image itself.
+            The approved template language is selected automatically.
+          </s-text>
 
           <s-button
             variant="primary"
             onClick={(e: any) => {
+              setPendingSend(null);
               const fields = e.target
                 .closest("s-section")
                 .querySelectorAll("s-select, s-text-field");
@@ -363,7 +380,7 @@ export default function Index() {
           </s-button>
 
           {marketingFetcher.data?.intent === "sendMarketing" && (
-            <s-text>{marketingFetcher.data.message}</s-text>
+            <s-text tone={marketingFetcher.data.ok ? undefined : "critical"}>{marketingFetcher.data.message}</s-text>
           )}
           {marketingFetcher.data?.intent === "checkSegment" &&
             !marketingFetcher.data.ok && (
@@ -371,9 +388,9 @@ export default function Index() {
             )}
           {pendingSend && (
             <s-banner tone="warning">
-              <s-stack direction="block" gap="tight">
+              <s-stack direction="block" gap="small">
                 <s-text>
-                  This will send "{pendingSend.templateName}" to{" "}
+                  This will send "{pendingSend.templateName}" ({pendingSend.language}) to{" "}
                   <strong>{pendingSend.count}</strong> customers. This cannot be
                   undone.
                 </s-text>
@@ -387,6 +404,7 @@ export default function Index() {
                           intent: "sendMarketing",
                           templateName: pendingSend.templateName,
                           segmentId: pendingSend.segmentId,
+                          imageUrl: pendingSend.imageUrl,
                         },
                         { method: "POST" },
                       );
