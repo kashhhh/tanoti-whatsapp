@@ -97,3 +97,10 @@ test("send failures retain Meta's error details rather than only a failed count"
   assert.equal(result.success, false);
   assert.equal(result.error, "Meta error 132001: Template does not exist in the specified language");
 });
+
+test("a successful HTTP response without a message ID is not counted as accepted", async () => {
+  globalThis.fetch = async () => reply({ messages: [] });
+  const result = await sendWhatsAppTemplate("919000000000", { name: "hello_world", language: { code: "en_US" } });
+  assert.equal(result.success, false);
+  assert.match(result.error, /no message ID/);
+});

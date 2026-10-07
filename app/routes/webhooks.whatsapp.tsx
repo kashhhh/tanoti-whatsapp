@@ -20,5 +20,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const body = await request.json();
   console.log("WHATSAPP WEBHOOK EVENT:", JSON.stringify(body, null, 2));
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      for (const status of change.value?.statuses ?? []) {
+        const summary = JSON.stringify({
+          messageId: status.id,
+          recipient: `ending ${String(status.recipient_id ?? "").slice(-4)}`,
+          status: status.status,
+          errors: status.errors?.map((error: {
+            code?: number; title?: string; message?: string;
+            error_data?: { details?: string };
+          }) => ({
+            code: error.code,
+            details: error.error_data?.details ?? error.message ?? error.title,
+          })),
+        });
+        if (status.status === "failed") {
+          console.error("WHATSAPP DELIVERY FAILED:", summary);
+        } else {
+          console.log("WHATSAPP DELIVERY STATUS:", summary);
+        }
+      }
+    }
+  }
   return new Response("OK", { status: 200 });
 };

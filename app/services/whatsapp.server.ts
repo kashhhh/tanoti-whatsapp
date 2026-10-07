@@ -303,7 +303,20 @@ export async function sendWhatsAppTemplate(
   );
 
   const data = await response.json();
-  return { success: response.ok, data, error: response.ok ? undefined : formatWhatsAppError(data) };
+  // The message ID links API acceptance to later delivery status webhooks.
+  const message = data.messages?.[0];
+  const success = response.ok && Boolean(message?.id);
+  const error = success ? undefined : data.error
+    ? formatWhatsAppError(data)
+    : "WhatsApp returned no message ID; acceptance could not be confirmed.";
+  console.log("WHATSAPP MARKETING REQUEST:", JSON.stringify({
+    template: template.name,
+    recipient: `ending ${phone.replace(/\D/g, "").slice(-4)}`,
+    messageId: message?.id,
+    status: success ? message.message_status ?? "accepted" : "failed",
+    error,
+  }));
+  return { success, data, error };
 }
 
 export async function sendAbandonedCartTemplate(
