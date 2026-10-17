@@ -1,0 +1,96 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: file:./ci.sqlite
+      SHOPIFY_API_KEY: ci-placeholder
+      SHOPIFY_API_SECRET: ci-placeholder
+      SHOPIFY_APP_URL: https://example.com
+      SCOPES: read_orders,read_customers
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx --no-install prisma generate
+
+      - name: Run tests
+        run: node --test tests/*.test.mjs
+
+      - name: Build application
+        run: npm run build
+
+  deploy:
+    name: Deploy to VPS
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: vps-production
+      cancel-in-progress: false
+    steps:
+      - name: Check out deployment script
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_SSH_KEY" || { echo 'Missing VPS_SSH_KEY secret'; exit 1; }
+          test -n "$VPS_KNOWN_HOSTS" || { echo 'Missing VPS_KNOWN_HOSTS secret'; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+
+      - name: Update, build, and restart VPS app
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST" || { echo 'Missing VPS_HOST secret'; exit 1; }
+          test -n "$VPS_USER" || { echo 'Missing VPS_USER secret'; exit 1; }
+          ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            "$VPS_USER@$VPS_HOST" \
+            "bash -s -- $DEPLOY_SHA" < .github/scripts/deploy.sh
+
+      - name: Remove deployment key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

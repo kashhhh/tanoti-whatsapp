@@ -188,7 +188,7 @@ export async function checkTemplateExists(templateName: string) {
 
   const response = await fetch(
     `https://graph.facebook.com/v23.0/${wabaId}/message_templates?name=${encodeURIComponent(templateName)}&fields=name,status,language,category,components&limit=100`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) },
   );
 
   const data = await response.json();
@@ -214,7 +214,7 @@ interface WhatsAppTemplateDefinition {
     type: string;
     format?: string;
     text?: string;
-    buttons?: Array<{ type: string; url?: string }>;
+    buttons?: Array<{ type: string; url?: string; text?: string }>;
   }>;
 }
 

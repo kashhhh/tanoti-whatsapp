@@ -7,6 +7,7 @@ import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import db from "../db.server";
+import { CodMessagingToggle } from "../components/CodMessagingToggle";
 import {
   prepareWhatsAppTemplate,
   sendWhatsAppTemplate,
@@ -67,6 +68,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     latestOrder,
     whatsappEnabled: settings.whatsappEnabled,
+    codEnabled: settings.codEnabled,
     segments,
   };
 };
@@ -241,7 +243,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
-  const { latestOrder, whatsappEnabled, segments } =
+  const { latestOrder, whatsappEnabled, codEnabled, segments } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const marketingFetcher = useFetcher<typeof action>();
@@ -310,6 +312,11 @@ export default function Index() {
                 : "Turn ON"}
           </button>
         </s-stack>
+      </s-section>
+
+      <s-section heading="Cash on Delivery messages">
+        <CodMessagingToggle enabled={codEnabled} />
+        <s-link href="/app/cod">View COD orders</s-link>
       </s-section>
 
       <s-section heading="Latest Order">

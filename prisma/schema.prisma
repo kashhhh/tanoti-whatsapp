@@ -31,6 +31,61 @@ model Settings {
   id              Int     @id @default(autoincrement())
   shop            String  @unique
   whatsappEnabled Boolean @default(false)
+  codEnabled      Boolean @default(false)
+}
+
+model CodOrder {
+  id             String   @id @default(cuid())
+  shop           String
+  orderId        String
+  orderNumber    String
+  customerName   String
+  phone          String
+  products       String
+  address        String
+  status         String   @default("pending")
+  method         String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  reminderAt     DateTime
+  lockUntil      DateTime?
+  calls          CodCall[]
+  messages       CodMessage[]
+  events         CodEvent[]
+  @@unique([shop, orderId])
+  @@index([shop, createdAt])
+  @@index([status, reminderAt])
+}
+
+model CodCall {
+  id        String   @id @default(cuid())
+  codId     String
+  order     CodOrder @relation(fields: [codId], references: [id], onDelete: Cascade)
+  attempt   Int
+  outcome   String
+  actor     String
+  createdAt DateTime @default(now())
+  @@unique([codId, attempt])
+}
+
+model CodMessage {
+  id         String   @id @default(cuid())
+  codId      String
+  order      CodOrder @relation(fields: [codId], references: [id], onDelete: Cascade)
+  kind       String
+  state      String   @default("queued")
+  messageId  String?  @unique
+  error      String?
+  createdAt  DateTime @default(now())
+  @@unique([codId, kind])
+}
+
+model CodEvent {
+  id        String   @id @default(cuid())
+  codId     String
+  order     CodOrder @relation(fields: [codId], references: [id], onDelete: Cascade)
+  detail    String
+  createdAt DateTime @default(now())
 }
 
 model AbandonedCheckout {

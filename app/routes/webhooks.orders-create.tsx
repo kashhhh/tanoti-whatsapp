@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import { sendWhatsAppMessage } from "app/services/whatsapp.server";
 import db from "../db.server";
+import { registerCodOrder } from "../services/cod.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { payload, topic, shop } = await authenticate.webhook(request);
@@ -11,6 +12,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { converted: true },
     });
   }
+  if (typeof payload.id !== "string" && typeof payload.id !== "number") {
+    return new Response("Invalid order ID", { status: 400 });
+  }
+  if (await registerCodOrder(shop, { ...payload, id: payload.id })) return new Response();
   const settings = await db.settings.findUnique({
     where: { shop },
   });

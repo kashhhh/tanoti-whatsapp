@@ -1,0 +1,224 @@
+/* eslint-env node, es2021 */
+import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { readFileSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, beforeEach, test } from "node:test";
+import { PrismaClient } from "@prisma/client";
+import ts from "typescript";
+
+const asModule = (source) => `data:text/javascript;base64,${Buffer.from(ts.transpileModule(source, {
+  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+}).outputText).toString("base64")}`;
+const rulesUrl = asModule(readFileSync(new URL("../app/services/cod-rules.ts", import.meta.url), "utf8"));
+const { addBusinessMinutes, isBusinessTime, validMetaSignature } = await import(rulesUrl);
+const temp = mkdtempSync(join(tmpdir(), "tanoti-cod-test-"));
+const databaseUrl = `file:${join(temp, "test.db").replaceAll("\\", "/")}`;
+const db = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+for (const directory of readdirSync("prisma/migrations", { withFileTypes: true }).filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+  const migration = readFileSync(`prisma/migrations/${directory.name}/migration.sql`, "utf8");
+  for (const statement of migration.replace(/\/\*[\s\S]*?\*\//g, "").replace(/--[^\n]*/g, "").split(";").filter((sql) => sql.trim())) {
+    await db.$executeRawUnsafe(statement);
+  }
+}
+const shop = "test.myshopify.com";
+let states = new Map();
+let sends = [];
+let sendMode = "accept";
+let setupError = false;
+globalThis.__codTest = {
+  db,
+  unauthenticated: { admin: async () => ({ admin: { graphql: async (query, { variables }) => {
+    const state = states.get(variables.id.split("/").pop());
+    if (query.includes("query CodOrderState")) return Response.json({ data: { order: state ? { ...state, tags: [...state.tags] } : null } });
+    if (query.includes("mutation CodAddTags")) variables.tags.forEach((tag) => state.tags.add(tag));
+    else if (query.includes("mutation CodRemoveTags")) variables.tags.forEach((tag) => state.tags.delete(tag));
+    else throw new Error("Unexpected mutation: cancellation and fulfillment changes are prohibited in this feature.");
+    return Response.json({ data: { mutation: { userErrors: [] } } });
+  } } }) },
+  prepareCodMessage: async (order, kind) => { if (setupError) throw new Error("Template not approved"); return { orderId: order.orderId, kind }; },
+  submitCodMessage: async (phone, template) => {
+    sends.push({ phone, ...template });
+    if (sendMode === "unknown") throw new Error("timeout");
+    return sendMode === "reject" ? { id: null, error: "Rejected" } : { id: `wamid-${sends.length}`, error: null };
+  },
+};
+const source = readFileSync(new URL("../app/services/cod.server.ts", import.meta.url), "utf8")
+  .replace('import db from "../db.server";', 'const db = globalThis.__codTest.db;')
+  .replace('import { unauthenticated } from "../shopify.server";', 'const { unauthenticated } = globalThis.__codTest;')
+  .replace('from "./cod-rules"', `from "${rulesUrl}"`)
+  .replace(/import \{ prepareCodMessage[^\n]+/, 'const { prepareCodMessage, submitCodMessage } = globalThis.__codTest;');
+const service = await import(asModule(source));
+const oldNumber = process.env.WHATSAPP_PHONE_NUMBER_ID;
+process.env.WHATSAPP_PHONE_NUMBER_ID = "business-number";
+beforeEach(async () => {
+  await db.codOrder.deleteMany();
+  await db.settings.upsert({ where: { shop }, update: { codEnabled: true }, create: { shop, codEnabled: true } });
+  states = new Map(); sends = []; sendMode = "accept"; setupError = false;
+});
+after(async () => {
+  await db.$disconnect();
+  rmSync(temp, { recursive: true, force: true }); // Exact directory created by mkdtemp above.
+  delete globalThis.__codTest;
+  if (oldNumber === undefined) delete process.env.WHATSAPP_PHONE_NUMBER_ID;
+  else process.env.WHATSAPP_PHONE_NUMBER_ID = oldNumber;
+});
+async function create(id = "101", gateways = ["Cash on Delivery (COD)"]) {
+  states.set(id, { id: `gid://shopify/Order/${id}`, tags: new Set(["VIP"]), cancelledAt: null });
+  await service.registerCodOrder(shop, { id, name: `#${id}`, payment_gateway_names: gateways, shipping_address: { phone: "+91 90000 00000", first_name: "Test", address1: "12 Main Road", address2: "Flat 3", city: "Mumbai", province: "Maharashtra", zip: "400001", country: "India" } });
+  return db.codOrder.findUnique({ where: { shop_orderId: { shop, orderId: id } } });
+}
+async function reply(order, action, overrides = {}) {
+  const message = await db.codMessage.findUnique({ where: { codId_kind: { codId: order.id, kind: "request" } } });
+  return service.receiveCodReply({ id: "incoming", from: "919000000000", context: { id: message.messageId }, button: { payload: `cod:${order.id}:${order.orderId}:${action}` }, ...overrides }, "business-number");
+}
+
+test("pausing COD messaging preserves replies and queues confirmation until resumed", async () => {
+  const order = await create();
+  assert.equal(sends.length, 1);
+  await db.settings.update({ where: { shop }, data: { codEnabled: false } });
+  await service.registerCodOrder(shop, { id: "202", payment_gateway_names: ["COD"] });
+  assert.equal(await db.codOrder.count(), 1);
+  await reply(order, "yes");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "confirmed");
+  await service.syncCodOrder(order.id);
+  await service.sweepCodOrders();
+  assert.equal(sends.length, 1);
+  assert.equal((await db.codMessage.findUnique({ where: { codId_kind: { codId: order.id, kind: "confirmed" } } })).state, "queued");
+  await db.settings.update({ where: { shop }, data: { codEnabled: true } });
+  await service.syncCodOrder(order.id);
+  await service.syncCodOrder(order.id);
+  assert.deepEqual(sends.map((send) => send.kind), ["request", "confirmed"]);
+});
+
+test("business calendar carries Saturday evening over Sunday and preserves minutes", () => {
+  assert.equal(addBusinessMinutes(new Date("2026-10-17T12:30:00Z"), 180).toISOString(), "2026-10-19T07:00:00.000Z");
+  assert.equal(addBusinessMinutes(new Date("2026-10-19T03:00:00Z"), 180).toISOString(), "2026-10-19T07:30:00.000Z");
+  assert.equal(isBusinessTime(new Date("2026-10-18T06:00:00Z")), false);
+  assert.equal(isBusinessTime(new Date("2026-10-19T13:00:00Z")), false);
+});
+test("Meta signature rejects modified bodies, malformed signatures and missing secret", () => {
+  const raw = '{"messages":[]}';
+  const signature = `sha256=${createHmac("sha256", "secret").update(raw).digest("hex")}`;
+  assert.equal(validMetaSignature(raw, signature, "secret"), true);
+  assert.equal(validMetaSignature(raw + " ", signature, "secret"), false);
+  assert.equal(validMetaSignature(raw, "sha256=bad", "secret"), false);
+  assert.equal(validMetaSignature(raw, signature, undefined), false);
+});
+test("COD intake is gated and prepaid orders are excluded", async () => {
+  assert.equal(await create("100", ["shopify_payments"]), null);
+  await db.settings.update({ where: { shop }, data: { codEnabled: false } });
+  assert.equal(await create(), null);
+  assert.equal(sends.length, 0);
+});
+test("duplicate creation sends once and preserves unrelated Shopify tags", async () => {
+  const order = await create();
+  await service.registerCodOrder(shop, { id: "101", payment_gateway_names: ["COD"] });
+  assert.equal(sends.length, 1);
+  assert.equal(order.phone, "919000000000");
+  assert.equal(order.address, "12 Main Road, Flat 3, Mumbai, Maharashtra, 400001, India");
+  assert.deepEqual([...states.get("101").tags].sort(), ["COD Pending", "VIP"]);
+});
+test("same-phone orders are isolated; confirmation sends once and locks subsequent YES/NO", async () => {
+  const first = await create(); const second = await create("102");
+  await reply(first, "yes"); await reply(first, "yes"); await reply(first, "no");
+  assert.equal((await db.codOrder.findUnique({ where: { id: first.id } })).status, "confirmed");
+  assert.equal((await db.codOrder.findUnique({ where: { id: second.id } })).status, "pending");
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+  assert.equal(states.get("101").tags.has("COD Pending"), false);
+});
+test("wrong sender, mismatched button, and unthreaded free text cannot update an order", async () => {
+  const order = await create();
+  await reply(order, "yes", { from: "other-phone" });
+  await reply(order, "yes", { button: { payload: `cod:${order.id}:999:yes` } });
+  await reply(order, "yes", { context: undefined, button: undefined, text: { body: "YES" } });
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "pending");
+  await reply(order, "yes", { button: undefined, text: { body: "YES" } });
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "confirmed");
+});
+test("NO requests cancellation; only an actual Shopify cancellation closes the order", async () => {
+  const order = await create();
+  await reply(order, "no");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "cancel_requested");
+  assert.equal(sends.filter((send) => send.kind === "cancelled").length, 0);
+  states.get("101").cancelledAt = new Date().toISOString();
+  await service.syncCodOrder(order.id); await reply(order, "yes");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "cancelled");
+  assert.equal(sends.filter((send) => send.kind === "cancelled").length, 1);
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 0);
+});
+test("direct Shopify confirmation disables buttons even before its webhook is processed", async () => {
+  const order = await create();
+  states.get("101").tags.add("COD Confirmed");
+  await reply(order, "no");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "confirmed");
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+});
+test("call attempts are ordered and no answer never confirms or cancels", async () => {
+  const order = await create();
+  await assert.rejects(service.recordCodCall(order.id, shop, 2, "no_answer", "Staff"), /first call/);
+  await service.recordCodCall(order.id, shop, 1, "no_answer", "Staff");
+  await service.recordCodCall(order.id, shop, 2, "no_answer", "Staff");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "pending");
+  assert.equal(await db.codCall.count(), 2);
+});
+test("phone confirmation is recorded once and sends confirmation", async () => {
+  const order = await create();
+  await service.recordCodCall(order.id, shop, 1, "confirmed", "Staff");
+  await service.recordCodCall(order.id, shop, 1, "confirmed", "Staff");
+  assert.equal(await db.codCall.count(), 1);
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+});
+test("unknown message acceptance cannot produce automatic duplicate sends", async () => {
+  sendMode = "unknown";
+  const order = await create();
+  await service.registerCodOrder(shop, { id: "101", payment_gateway_names: ["COD"] });
+  assert.equal(sends.length, 1);
+  assert.equal((await db.codMessage.findFirst({ where: { codId: order.id } })).state, "unknown");
+});
+test("unapproved confirmation remains queued and buttons stay locked; sync recovers after setup", async () => {
+  const order = await create(); setupError = true;
+  await reply(order, "yes"); await reply(order, "no");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "confirmed");
+  setupError = false; await service.syncCodOrder(order.id);
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+});
+test("concurrent decisions serialize and tenant mismatch cannot change tags", async () => {
+  const order = await create();
+  await assert.rejects(service.changeCodStatus(order.id, "other.myshopify.com", "confirmed", "Staff"), /not found/);
+  const results = await Promise.allSettled([
+    service.changeCodStatus(order.id, shop, "confirmed", "Staff"),
+    service.changeCodStatus(order.id, shop, "cancel_requested", "Staff"),
+  ]);
+  assert.ok(results.some((result) => result.status === "fulfilled"));
+  assert.ok(sends.filter((send) => send.kind === "confirmed").length <= 1);
+});
+
+test("reminder sends once during business hours and never automatically cancels", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-19T04:30:00Z") });
+  t.after(() => t.mock.timers.reset());
+  const order = await create();
+  t.mock.timers.setTime(new Date("2026-10-19T07:29:00Z").getTime());
+  await service.sweepCodOrders();
+  assert.equal(sends.filter((send) => send.kind === "reminder").length, 0);
+  t.mock.timers.setTime(new Date("2026-10-19T07:30:00Z").getTime());
+  await service.sweepCodOrders(); await service.sweepCodOrders();
+  assert.equal(sends.filter((send) => send.kind === "reminder").length, 1);
+  t.mock.timers.setTime(new Date("2026-10-22T07:30:00Z").getTime());
+  await service.sweepCodOrders();
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "pending");
+});
+
+test("a delayed reminder waits through Sunday; confirmed orders skip reminders", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-17T04:30:00Z") });
+  t.after(() => t.mock.timers.reset());
+  const first = await create(); await create("102");
+  await reply(first, "yes");
+  t.mock.timers.setTime(new Date("2026-10-18T07:30:00Z").getTime());
+  await service.sweepCodOrders();
+  assert.equal(sends.filter((send) => send.kind === "reminder").length, 0);
+  t.mock.timers.setTime(new Date("2026-10-19T04:30:00Z").getTime());
+  await service.sweepCodOrders();
+  assert.deepEqual(sends.filter((send) => send.kind === "reminder").map((send) => send.orderId), ["102"]);
+});
