@@ -7,6 +7,7 @@ Use **Enable COD WhatsApp messages** on the app home page or **COD orders** page
 - New COD orders get `COD Pending` and one order-specific WhatsApp request.
 - YES/CONFIRM, a manual **Save tag → COD Confirmed**, a confirmed call, or adding `COD Confirmed` directly in Shopify confirms the order. The follow-up confirmation message is paused: the app does not read, validate or send `order_confirmation_test` as part of this COD workflow. The template itself is unchanged.
 - Once confirmed, YES/NO can no longer change the order. Buttons may remain visible in WhatsApp, but the server ignores their actions. Even deleting the confirmed tag does not reopen this workflow.
+- Prepaid orders marked paid when created still receive the existing `order_confirmation_test` notification when general WhatsApp notifications are enabled. The template is unchanged. COD orders do not fall back to this notification when COD messaging is off; their follow-up confirmation message remains paused. Skipped orders are logged with their payment gateway names, payment status and COD switch state.
 - NO/CANCEL changes the order tag to `COD Cancel Requested`. Staff open the linked Shopify order and cancel manually. There is no cancellation API call or automatic deadline.
 - A cancellation notice is sent only after Shopify reports the order actually cancelled.
 - Record call 1 and call 2 as No answer, Confirmed, Declined, or Call back later. No answer and callback do not confirm or cancel an order. Recorded attempts are immutable; use the order status action for a later decision.
