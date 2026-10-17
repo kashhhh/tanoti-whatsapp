@@ -74,7 +74,7 @@ async function reply(order, action, overrides = {}) {
   return service.receiveCodReply({ id: "incoming", from: "919000000000", context: { id: message.messageId }, button: { payload: `cod:${order.id}:${order.orderId}:${action}` }, ...overrides }, "business-number");
 }
 
-test("pausing COD messaging preserves replies and queues confirmation until resumed", async () => {
+test("confirmations stay paused after the COD messaging switch is reenabled", async () => {
   const order = await create();
   assert.equal(sends.length, 1);
   await db.settings.update({ where: { shop }, data: { codEnabled: false } });
@@ -85,11 +85,11 @@ test("pausing COD messaging preserves replies and queues confirmation until resu
   await service.syncCodOrder(order.id);
   await service.sweepCodOrders();
   assert.equal(sends.length, 1);
-  assert.equal((await db.codMessage.findUnique({ where: { codId_kind: { codId: order.id, kind: "confirmed" } } })).state, "queued");
+  assert.equal(await db.codMessage.findUnique({ where: { codId_kind: { codId: order.id, kind: "confirmed" } } }), null);
   await db.settings.update({ where: { shop }, data: { codEnabled: true } });
   await service.syncCodOrder(order.id);
   await service.syncCodOrder(order.id);
-  assert.deepEqual(sends.map((send) => send.kind), ["request", "confirmed"]);
+  assert.deepEqual(sends.map((send) => send.kind), ["request"]);
 });
 
 test("business calendar carries Saturday evening over Sunday and preserves minutes", () => {
@@ -120,12 +120,12 @@ test("duplicate creation sends once and preserves unrelated Shopify tags", async
   assert.equal(order.address, "12 Main Road, Flat 3, Mumbai, Maharashtra, 400001, India");
   assert.deepEqual([...states.get("101").tags].sort(), ["COD Pending", "VIP"]);
 });
-test("same-phone orders are isolated; confirmation sends once and locks subsequent YES/NO", async () => {
+test("same-phone orders are isolated; confirmation locks subsequent YES/NO without sending", async () => {
   const first = await create(); const second = await create("102");
   await reply(first, "yes"); await reply(first, "yes"); await reply(first, "no");
   assert.equal((await db.codOrder.findUnique({ where: { id: first.id } })).status, "confirmed");
   assert.equal((await db.codOrder.findUnique({ where: { id: second.id } })).status, "pending");
-  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 0);
   assert.equal(states.get("101").tags.has("COD Pending"), false);
 });
 test("wrong sender, mismatched button, and unthreaded free text cannot update an order", async () => {
@@ -153,7 +153,7 @@ test("direct Shopify confirmation disables buttons even before its webhook is pr
   states.get("101").tags.add("COD Confirmed");
   await reply(order, "no");
   assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "confirmed");
-  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 0);
 });
 test("call attempts are ordered and no answer never confirms or cancels", async () => {
   const order = await create();
@@ -163,12 +163,12 @@ test("call attempts are ordered and no answer never confirms or cancels", async 
   assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "pending");
   assert.equal(await db.codCall.count(), 2);
 });
-test("phone confirmation is recorded once and sends confirmation", async () => {
+test("phone confirmation is recorded once while its message remains paused", async () => {
   const order = await create();
   await service.recordCodCall(order.id, shop, 1, "confirmed", "Staff");
   await service.recordCodCall(order.id, shop, 1, "confirmed", "Staff");
   assert.equal(await db.codCall.count(), 1);
-  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 0);
 });
 test("unknown message acceptance cannot produce automatic duplicate sends", async () => {
   sendMode = "unknown";
@@ -177,12 +177,15 @@ test("unknown message acceptance cannot produce automatic duplicate sends", asyn
   assert.equal(sends.length, 1);
   assert.equal((await db.codMessage.findFirst({ where: { codId: order.id } })).state, "unknown");
 });
-test("unapproved confirmation remains queued and buttons stay locked; sync recovers after setup", async () => {
+test("previously queued confirmations stay paused through replies, sync and sweep", async () => {
   const order = await create(); setupError = true;
+  await db.codMessage.create({ data: { codId: order.id, kind: "confirmed", state: "queued", error: "order_confirmation_test must have no buttons." } });
   await reply(order, "yes"); await reply(order, "no");
   assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "confirmed");
   setupError = false; await service.syncCodOrder(order.id);
-  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 1);
+  await service.sweepCodOrders();
+  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 0);
+  assert.equal((await db.codMessage.findUnique({ where: { codId_kind: { codId: order.id, kind: "confirmed" } } })).state, "queued");
 });
 test("concurrent decisions serialize and tenant mismatch cannot change tags", async () => {
   const order = await create();

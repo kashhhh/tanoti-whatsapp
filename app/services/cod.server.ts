@@ -88,6 +88,9 @@ async function setStatus(order: CodOrder, status: CodStatus, method: string) {
 }
 
 async function sendOnce(order: CodOrder, kind: MessageKind) {
+  // Pause confirmation notices without reading or changing the existing template.
+  // This also prevents previously queued confirmations from being sent on sync/sweep.
+  if (kind === "confirmed") return;
   const row = await db.codMessage.upsert({ where: { codId_kind: { codId: order.id, kind } }, create: { codId: order.id, kind }, update: {} });
   if (row.state !== "queued") return;
   const settings = await db.settings.findUnique({ where: { shop: order.shop } });

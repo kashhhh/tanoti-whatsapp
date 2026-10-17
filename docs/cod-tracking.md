@@ -5,12 +5,12 @@ Use **Enable COD WhatsApp messages** on the app home page or **COD orders** page
 ## Staff workflow
 
 - New COD orders get `COD Pending` and one order-specific WhatsApp request.
-- YES/CONFIRM, a manual **Save tag → COD Confirmed**, a confirmed call, or adding `COD Confirmed` directly in Shopify triggers the existing `order_confirmation_test` template.
+- YES/CONFIRM, a manual **Save tag → COD Confirmed**, a confirmed call, or adding `COD Confirmed` directly in Shopify confirms the order. The follow-up confirmation message is paused: the app does not read, validate or send `order_confirmation_test` as part of this COD workflow. The template itself is unchanged.
 - Once confirmed, YES/NO can no longer change the order. Buttons may remain visible in WhatsApp, but the server ignores their actions. Even deleting the confirmed tag does not reopen this workflow.
 - NO/CANCEL changes the order tag to `COD Cancel Requested`. Staff open the linked Shopify order and cancel manually. There is no cancellation API call or automatic deadline.
 - A cancellation notice is sent only after Shopify reports the order actually cancelled.
 - Record call 1 and call 2 as No answer, Confirmed, Declined, or Call back later. No answer and callback do not confirm or cancel an order. Recorded attempts are immutable; use the order status action for a later decision.
-- Reminder: one after three business hours from WhatsApp accepting the initial request. Calendar: Monday–Saturday, 10:00–18:30 Asia/Kolkata. Sundays are excluded; holidays are not configured. A delayed reminder is sent only during business hours. Initial requests and confirmation notices are immediate, including outside calling hours.
+- Reminder: one after three business hours from WhatsApp accepting the initial request. Calendar: Monday–Saturday, 10:00–18:30 Asia/Kolkata. Sundays are excluded; holidays are not configured. A delayed reminder is sent only during business hours. Initial requests are immediate, including outside calling hours.
 - Actual message delivery/read/failure tracking, courier control, fulfillment holds and partial prepayments are outside this feature.
 
 The table refreshes every 30 seconds while visible. **Sync Shopify status** reads Shopify immediately and retries template preparation if a message is still queued. History is stored in the app; unrelated Shopify tags and order notes are preserved.
@@ -35,20 +35,20 @@ Template names and parameter mappings are defined in app code. They do not requi
 |---|---|
 | `cod_request` | First name, order number, items, delivery address |
 | `cod_reminder` | First name, order number, items, delivery address |
-| `order_confirmation_test` | First name, order number, items, delivery address |
+| `order_confirmation_test` | Paused; excluded from COD enable checks and sends |
 | `cod_cancelled` | First name, order number |
 
 `cod_request`, `cod_reminder` and `cod_cancelled` have been submitted to Meta. The app checks approval before enabling or sending; submission alone does not allow sending. Template text stays in Meta, including the finalized cancellation wording. Templates use numbered body variables (`{{1}}`, `{{2}}`, etc.) in the order above. The approved template language is read from Meta. Legacy `COD_*_TEMPLATE` and `COD_*_PARAMS` settings are ignored and can be removed from the host.
 
 `COD_GATEWAY_NAMES` remains an optional comma-separated list of exact COD gateway names; it defaults to `Cash on Delivery (COD),Cash on Delivery,COD`. WhatsApp credentials and scheduler secrets remain environment settings.
 
-Request and reminder templates must have exactly two quick-reply buttons: **YES or CONFIRM first**, **NO or CANCEL second**. Each payload contains the internal COD record and Shopify order ID. Confirmation and cancellation templates must have no buttons. Static text headers are supported; media headers, variable headers and named body parameters are not.
+Request and reminder templates must have exactly two quick-reply buttons: **YES or CONFIRM first**, **NO or CANCEL second**. Each payload contains the internal COD record and Shopify order ID. The cancellation template must have no buttons. The existing confirmation template is untouched and its buttons do not block enabling COD. Static text headers are supported; media headers, variable headers and named body parameters are not.
 
 Plain text YES/CONFIRM/NO/CANCEL is accepted only when the customer uses WhatsApp's reply-to action on a tracked request/reminder. Unthreaded text is deliberately ignored because one phone can have multiple orders. Sender number, business phone ID, stored outbound message ID and button order identity must all match.
 
 ## Message acceptance and recovery
 
-The table reports **Accepted by WhatsApp**, not delivered. Template setup errors remain queued and are retried on sync/sweep. Definitive API rejections and ambiguous timeouts are not automatically resent. A crash during a send can leave `sending`; inspect Meta before any operator reset to avoid duplicate messages. Confirmation locks take effect even if the confirmation message could not be accepted.
+The table reports **Accepted by WhatsApp**, not delivered. Template setup errors for active messages remain queued and are retried on sync/sweep. Definitive API rejections and ambiguous timeouts are not automatically resent. A crash during a send can leave `sending`; inspect Meta before any operator reset to avoid duplicate messages. Previously queued confirmation messages stay paused even after sync, sweep, or re-enabling COD messaging. Order confirmation and YES/NO locks still take effect immediately.
 
 Order-level database leases serialize incoming replies, staff actions and background work. Unique message records prevent duplicate request/reminder/confirmation/cancellation sends during ordinary webhook retries. The periodic sweep also reconciles missed Shopify update webhooks. External systems can still change orders concurrently; this feature does not control dispatch.
 

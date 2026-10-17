@@ -8,7 +8,7 @@ const moduleUrl = (source) => `data:text/javascript;base64,${Buffer.from(ts.tran
 }).outputText).toString("base64")}`;
 const whatsappUrl = moduleUrl(readFileSync(new URL("../app/services/whatsapp.server.ts", import.meta.url), "utf8"));
 const source = readFileSync(new URL("../app/services/cod-messages.server.ts", import.meta.url), "utf8").replace('from "./whatsapp.server"', `from "${whatsappUrl}"`);
-const { prepareCodMessage, submitCodMessage } = await import(moduleUrl(source));
+const { messageKinds, prepareCodMessage, submitCodMessage } = await import(moduleUrl(source));
 const order = { id: "cod123", orderId: "123", customerName: "Test", orderNumber: "#123", products: "Dress", address: "Address" };
 const env = { ...process.env };
 const originalFetch = globalThis.fetch;
@@ -41,11 +41,10 @@ test("reversed or missing buttons cannot silently invert the customer choice", a
   template.components.pop();
   await assert.rejects(prepareCodMessage(order, "request"), /two quick-reply/);
 });
-test("confirmation reuses order_confirmation_test with its existing four variables and no buttons", async () => {
-  template = { name: "order_confirmation_test", status: "APPROVED", language: "en_US", components: [{ type: "BODY", text: "Hi {{1}}, order {{2}} is confirmed. Items: {{3}}. Address: {{4}}." }] };
-  const payload = await prepareCodMessage(order, "confirmed");
-  assert.equal(payload.name, "order_confirmation_test");
-  assert.deepEqual(payload.components, [{ type: "body", parameters: ["Test", "#123", "Dress", "Address"].map((text) => ({ type: "text", text })) }]);
+test("paused confirmation is excluded from enable checks and never reads or changes its template", async () => {
+  globalThis.fetch = async () => { throw new Error("Must not contact Meta for a paused confirmation"); };
+  assert.deepEqual(messageKinds, ["request", "reminder", "cancelled"]);
+  await assert.rejects(prepareCodMessage(order, "confirmed"), /confirmation messages are paused/);
 });
 test("wrong variable counts and unapproved templates are rejected", async () => {
   template.components[0].text = "Hi {{1}}, confirm {{2}}?";

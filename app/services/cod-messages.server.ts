@@ -1,8 +1,9 @@
 import type { CodOrder } from "@prisma/client";
 import { checkTemplateExists, formatWhatsAppError } from "./whatsapp.server";
 
-export const messageKinds = ["request", "reminder", "confirmed", "cancelled"] as const;
-export type MessageKind = typeof messageKinds[number];
+// Only active COD messages are checked when enabling the feature.
+export const messageKinds = ["request", "reminder", "cancelled"] as const;
+export type MessageKind = typeof messageKinds[number] | "confirmed";
 
 const COD_TEMPLATES = {
   request: { name: "cod_request", params: ["customerName", "orderNumber", "products", "address"] },
@@ -12,6 +13,7 @@ const COD_TEMPLATES = {
 } as const;
 
 export async function prepareCodMessage(order: CodOrder, kind: MessageKind) {
+  if (kind === "confirmed") throw new Error("COD confirmation messages are paused.");
   const { name, params: mapping } = COD_TEMPLATES[kind];
   const { template, approved } = await checkTemplateExists(name);
   if (!template || !approved) throw new Error(`Template ${name} must be approved.`);

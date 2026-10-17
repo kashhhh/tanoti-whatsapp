@@ -88,7 +88,7 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
           <option value="" disabled>Select status</option><option value="confirmed">COD Confirmed</option><option value="cancel_requested">COD Cancel Requested</option>
         </select></label>{" "}<button disabled={busy} type="submit">Save tag</button>
       </fetcher.Form>}
-      {order.status === "confirmed" && <s-paragraph>YES / NO replies locked</s-paragraph>}
+      {order.status === "confirmed" && <s-paragraph>YES / NO replies locked. Confirmation message paused.</s-paragraph>}
       {order.status === "cancel_requested" && <s-paragraph>Awaiting manual cancellation in Shopify</s-paragraph>}
     </s-table-cell>
     <s-table-cell>
@@ -106,7 +106,7 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
       {!terminal && order.calls.length === 2 && <s-paragraph>Both calls recorded — review manually</s-paragraph>}
     </s-table-cell>
     <s-table-cell>
-      {order.messages.map((message) => <s-paragraph key={message.id}>{message.kind}: {message.state === "accepted" ? "Accepted by WhatsApp" : message.state}{message.error ? ` — ${message.error}` : ""}</s-paragraph>)}
+      {order.messages.map((message) => <s-paragraph key={message.id}>{message.kind}: {message.kind === "confirmed" && message.state === "queued" ? "Paused" : message.state === "accepted" ? "Accepted by WhatsApp" : message.state}{message.error && !(message.kind === "confirmed" && message.state === "queued") ? ` — ${message.error}` : ""}</s-paragraph>)}
       {order.status === "pending" && !reminder && <s-paragraph>Reminder due {formatDate(order.reminderAt)}</s-paragraph>}
       <s-button disabled={busy} onClick={() => fetcher.submit({ id: order.id, intent: "sync" }, { method: "post" })}>Sync Shopify status</s-button>
       {fetcher.data && <s-paragraph tone={fetcher.data.ok ? "success" : "critical"}>{fetcher.data.message}</s-paragraph>}
@@ -130,7 +130,7 @@ export default function CodOrders() {
         <s-button onClick={() => revalidator.revalidate()}>Refresh table</s-button>
       </s-stack>
       <CodMessagingToggle enabled={enabled} />
-      <s-paragraph>Tracks new COD orders after enabling. Confirming an order sends a confirmation message and permanently disables its YES / NO actions.</s-paragraph>
+      <s-paragraph>Tracks new COD orders after enabling. Confirming an order permanently disables its YES / NO actions. Confirmation messages are currently paused.</s-paragraph>
     </s-section>
     <s-section heading={`${total} orders`}>
       <Form method="get" style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
