@@ -41,7 +41,7 @@ Template names and parameter mappings are defined in app code. They do not requi
 
 `cod_request`, `cod_reminder` and `cod_cancelled` have been submitted to Meta. The app checks approval before enabling or sending; submission alone does not allow sending. Template text stays in Meta, including the finalized cancellation wording. Templates use numbered body variables (`{{1}}`, `{{2}}`, etc.) in the order above. The approved template language is read from Meta. Legacy `COD_*_TEMPLATE` and `COD_*_PARAMS` settings are ignored and can be removed from the host.
 
-`COD_GATEWAY_NAMES` remains an optional comma-separated list of exact COD gateway names; it defaults to `Cash on Delivery (COD),Cash on Delivery,COD`. WhatsApp credentials and scheduler secrets remain environment settings.
+`COD_GATEWAY_NAMES` remains an optional comma-separated list of exact COD gateway names; it defaults to `Cash on Delivery (COD),Cash on Delivery,COD,cash_on_delivery`. WhatsApp credentials and scheduler secrets remain environment settings.
 
 Request and reminder templates must have exactly two quick-reply buttons: **YES or CONFIRM first**, **NO or CANCEL second**. Each payload contains the internal COD record and Shopify order ID. The cancellation template must have no buttons. The existing confirmation template is untouched and its buttons do not block enabling COD. Static text headers are supported; media headers, variable headers and named body parameters are not.
 

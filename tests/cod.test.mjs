@@ -29,6 +29,7 @@ let sendMode = "accept";
 let setupError = false;
 globalThis.__codTest = {
   db,
+  authenticate: { admin: async () => ({ session: { shop }, redirect: (location) => new Response(null, { status: 302, headers: { Location: location } }) }) },
   unauthenticated: { admin: async () => ({ admin: { graphql: async (query, { variables }) => {
     const state = states.get(variables.id.split("/").pop());
     if (query.includes("query CodOrderState")) return Response.json({ data: { order: state ? { ...state, tags: [...state.tags] } : null } });
@@ -50,6 +51,13 @@ const source = readFileSync(new URL("../app/services/cod.server.ts", import.meta
   .replace('from "./cod-rules"', `from "${rulesUrl}"`)
   .replace(/import \{ prepareCodMessage[^\n]+/, 'const { prepareCodMessage, submitCodMessage } = globalThis.__codTest;');
 const service = await import(asModule(source));
+const dashboardSource = readFileSync(new URL("../app/routes/app.cod.tsx", import.meta.url), "utf8").split("export const action")[0]
+  .replace('import db from "../db.server";', 'const db = globalThis.__codTest.db;')
+  .replace('import { authenticate } from "../shopify.server";', 'const { authenticate } = globalThis.__codTest;');
+const { loader: dashboardLoader } = await import(asModule(dashboardSource));
+const homeSource = readFileSync(new URL("../app/routes/app._index.tsx", import.meta.url), "utf8")
+  .replace('import { authenticate } from "../shopify.server";', 'const { authenticate } = globalThis.__codTest;');
+const { loader: homeLoader } = await import(asModule(homeSource));
 const oldNumber = process.env.WHATSAPP_PHONE_NUMBER_ID;
 process.env.WHATSAPP_PHONE_NUMBER_ID = "business-number";
 beforeEach(async () => {
@@ -119,6 +127,13 @@ test("duplicate creation sends once and preserves unrelated Shopify tags", async
   assert.equal(order.phone, "919000000000");
   assert.equal(order.address, "12 Main Road, Flat 3, Mumbai, Maharashtra, 400001, India");
   assert.deepEqual([...states.get("101").tags].sort(), ["COD Pending", "VIP"]);
+});
+test("Shopify cash_on_delivery gateway enters the COD request workflow", async () => {
+  const order = await create("101", ["cash_on_delivery"]);
+  assert.ok(order);
+  assert.equal(order.status, "pending");
+  assert.equal(states.get("101").tags.has("COD Pending"), true);
+  assert.deepEqual(sends.map((send) => send.kind), ["request"]);
 });
 test("same-phone orders are isolated; confirmation locks subsequent YES/NO without sending", async () => {
   const first = await create(); const second = await create("102");
@@ -224,4 +239,32 @@ test("a delayed reminder waits through Sunday; confirmed orders skip reminders",
   t.mock.timers.setTime(new Date("2026-10-19T04:30:00Z").getTime());
   await service.sweepCodOrders();
   assert.deepEqual(sends.filter((send) => send.kind === "reminder").map((send) => send.orderId), ["102"]);
+});
+
+test("app opens COD orders and preserves the embedded Shopify query parameters", async () => {
+  const response = await homeLoader({ request: new Request("https://example.com/app?shop=test.myshopify.com&host=encoded-host&embedded=1") });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("Location"), "/app/cod?shop=test.myshopify.com&host=encoded-host&embedded=1");
+});
+
+test("dashboard counts, call queue and search remain scoped to the current shop", async () => {
+  const first = await create("101"); const second = await create("102");
+  const confirmed = await create("103"); const cancelled = await create("104");
+  await service.recordCodCall(first.id, shop, 1, "no_answer", "Staff");
+  await db.codOrder.update({ where: { id: second.id }, data: { reminderAt: new Date(Date.now() - 60_000) } });
+  await reply(confirmed, "yes"); await reply(cancelled, "no");
+  await db.codOrder.create({ data: { ...first, id: undefined, shop: "other.myshopify.com", orderId: "outside" } });
+  const load = (query = "") => dashboardLoader({ request: new Request(`https://example.com/app/cod${query}`) });
+  const all = await load();
+  assert.equal(all.total, 4);
+  assert.equal(all.summary.pending, 2);
+  assert.equal(all.summary.confirmed, 1);
+  assert.equal(all.summary.cancel_requested, 1);
+  assert.equal(all.callsDue, 2);
+  const calls = await load("?task=calls&q=102");
+  assert.deepEqual(calls.orders.map((order) => order.orderId), ["102"]);
+  assert.equal(calls.summary.pending, 2);
+  assert.equal((await load("?status=confirmed")).total, 1);
+  assert.equal((await load("?status=cancel_requested&task=calls")).total, 0);
+  assert.equal((await load("?status=__proto__")).total, 4);
 });

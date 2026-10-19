@@ -16,7 +16,7 @@ export function isBusinessTime(date: Date) {
 }
 
 export function isCodOrder(gateways: string[]) {
-  const configured = (process.env.COD_GATEWAY_NAMES || "Cash on Delivery (COD),Cash on Delivery,COD")
+  const configured = (process.env.COD_GATEWAY_NAMES || "Cash on Delivery (COD),Cash on Delivery,COD,cash_on_delivery")
     .split(",").map((name) => name.trim().toLowerCase());
   return gateways.some((name) => configured.includes(name.trim().toLowerCase()));
 }

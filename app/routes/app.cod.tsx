@@ -6,6 +6,7 @@ import { authenticate } from "../shopify.server";
 import { changeCodStatus, recordCodCall, syncCodOrder } from "../services/cod.server";
 import { messageKinds, prepareCodMessage } from "../services/cod-messages.server";
 import { CodMessagingToggle } from "../components/CodMessagingToggle";
+import styles from "../styles/cod.module.css";
 
 const labels: Record<string, string> = { pending: "COD Pending", confirmed: "COD Confirmed", cancel_requested: "COD Cancel Requested", cancelled: "COD Cancelled" };
 const outcomes: Record<string, string> = { no_answer: "No answer", confirmed: "Confirmed", declined: "Declined", callback: "Call back later" };
@@ -15,18 +16,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
   const search = (url.searchParams.get("q") || "").slice(0, 100);
+  const task = url.searchParams.get("task") === "calls" ? "calls" : "";
+  const now = new Date();
+  const callsWhere = {
+    shop: session.shop, status: "pending",
+    OR: [
+      { reminderAt: { lte: now }, calls: { none: {} } },
+      { AND: [{ calls: { some: { attempt: 1 } } }, { calls: { none: { attempt: 2 } } }] },
+    ],
+  };
   const parsedPage = Number(url.searchParams.get("page") || 1);
   const page = Number.isSafeInteger(parsedPage) && parsedPage > 0 ? Math.min(parsedPage, 10000) : 1;
   const where = {
-    shop: session.shop, ...(status in labels ? { status } : {}),
-    ...(search ? { OR: [{ orderNumber: { contains: search } }, { customerName: { contains: search } }, { phone: { contains: search } }] } : {}),
+    shop: session.shop, ...(Object.hasOwn(labels, status) ? { status } : {}),
+    AND: [
+      ...(task ? [callsWhere] : []),
+      ...(search ? [{ OR: [{ orderNumber: { contains: search } }, { customerName: { contains: search } }, { phone: { contains: search } }] }] : []),
+    ],
   };
-  const [orders, total, settings] = await Promise.all([
+  const [orders, total, settings, counts, callsDue] = await Promise.all([
     db.codOrder.findMany({ where, orderBy: { createdAt: "desc" }, take: 25, skip: (page - 1) * 25,
       include: { calls: { orderBy: { attempt: "asc" } }, messages: true, events: { orderBy: { createdAt: "desc" }, take: 10 } } }),
     db.codOrder.count({ where }), db.settings.findUnique({ where: { shop: session.shop } }),
+    db.codOrder.groupBy({ by: ["status"], where: { shop: session.shop }, _count: { _all: true } }),
+    db.codOrder.count({ where: callsWhere }),
   ]);
-  return { orders, total, page, search, status, enabled: settings?.codEnabled ?? false, shop: session.shop, now: Date.now() };
+  const summary = Object.fromEntries(counts.map((count) => [count.status, count._count._all]));
+  return { orders, total, page, search, status, task, summary, callsDue, enabled: settings?.codEnabled ?? false, shop: session.shop, now: now.getTime() };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -73,76 +89,120 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
   const terminal = ["confirmed", "cancelled"].includes(order.status);
   const reminder = order.messages.find((message) => message.kind === "reminder");
   const callDue = order.status === "pending" && new Date(order.reminderAt).getTime() <= now;
-  return <s-table-row>
-    <s-table-cell>
-      <s-link href={`https://${shop}/admin/orders/${order.orderId}`} target="_blank">{order.orderNumber}</s-link>
-      <s-paragraph>{formatDate(order.createdAt)}</s-paragraph>
-      <s-text>{order.customerName}</s-text><s-paragraph>{order.phone || "No phone"}</s-paragraph>
-    </s-table-cell>
-    <s-table-cell>
-      <s-badge tone={order.status === "confirmed" ? "success" : order.status === "pending" ? "warning" : "neutral"}>{labels[order.status]}</s-badge>
-      {order.method && <s-paragraph>{order.method.startsWith("WhatsApp") ? "Confirmed / updated via WhatsApp" : order.method}</s-paragraph>}
-      {!terminal && <fetcher.Form method="post">
-        <input type="hidden" name="id" value={order.id} /><input type="hidden" name="intent" value="status" />
-        <label>Change order tag <select name="status" defaultValue="" required disabled={busy}>
-          <option value="" disabled>Select status</option><option value="confirmed">COD Confirmed</option><option value="cancel_requested">COD Cancel Requested</option>
-        </select></label>{" "}<button disabled={busy} type="submit">Save tag</button>
-      </fetcher.Form>}
-      {order.status === "confirmed" && <s-paragraph>YES / NO replies locked. Confirmation message paused.</s-paragraph>}
-      {order.status === "cancel_requested" && <s-paragraph>Awaiting manual cancellation in Shopify</s-paragraph>}
-    </s-table-cell>
-    <s-table-cell>
-      {order.calls.map((call) => <s-paragraph key={call.id}>Call {call.attempt}: {outcomes[call.outcome]} · {formatDate(call.createdAt)}</s-paragraph>)}
-      {!order.calls.length && <s-paragraph>No calls recorded</s-paragraph>}
-      {!terminal && order.calls.length < 2 && <fetcher.Form method="post">
+  const shopifyUrl = `https://${shop}/admin/orders/${order.orderId}`;
+  const nextStep = order.status === "confirmed" ? "Ready for your team" : order.status === "cancelled" ? "Order closed" :
+    order.status === "cancel_requested" ? "Cancel manually in Shopify" : order.calls.length >= 2 ? "Review after both calls" :
+      order.calls.length === 1 ? "Arrange the second call" : callDue ? "First call due" : "Waiting for customer";
+  const badgeLabels: Record<string, string> = { pending: "Pending", confirmed: "Confirmed", cancel_requested: "Cancel requested", cancelled: "Cancelled" };
+  const messageLabels: Record<string, string> = { request: "Request", reminder: "Reminder", confirmed: "Confirmation", cancelled: "Cancellation" };
+  const stateLabels: Record<string, string> = { accepted: "Accepted by WhatsApp", queued: "Waiting to send", sending: "Sending", rejected: "Not accepted", unknown: "Check acceptance", superseded: "No longer needed" };
+  const request = order.messages.find((message) => message.kind === "request");
+  const hasError = order.messages.some((message) => message.kind !== "confirmed" && Boolean(message.error));
+  const setStatus = (status: "confirmed" | "cancel_requested") => fetcher.submit({ id: order.id, intent: "status", status }, { method: "post" });
+
+  return <tr className={styles.orderRow}>
+    <td>
+      <a className={styles.orderLink} href={shopifyUrl} target="_blank" rel="noreferrer">{order.orderNumber}<span aria-hidden="true"> ↗</span></a>
+      <div className={styles.customerName}>{order.customerName}</div>
+      {order.phone ? <a className={styles.phone} href={`tel:+${order.phone}`}>+{order.phone}</a> : <span className={styles.muted}>No phone number</span>}
+      <div className={styles.timestamp}>{formatDate(order.createdAt)}</div>
+      <details className={styles.details}><summary>Order details</summary><p>{order.products || "No items recorded"}</p><p>{order.address || "No address recorded"}</p></details>
+    </td>
+    <td>
+      <span className={`${styles.badge} ${styles[order.status]}`} title={labels[order.status]}>{badgeLabels[order.status]}</span>
+      <p className={styles.nextStep}>{nextStep}</p>
+      {order.method && <p className={styles.muted}>{order.method.startsWith("WhatsApp") ? "Via WhatsApp" : order.method.startsWith("Phone") ? "By phone" : "Updated by the team"}</p>}
+      {order.status === "confirmed" && <p className={styles.muted}>YES / NO replies locked</p>}
+    </td>
+    <td>
+      <div className={styles.callProgress} aria-label={`${order.calls.length} of 2 calls recorded`}>
+        {[1, 2].map((attempt) => <span key={attempt} className={order.calls.some((call) => call.attempt === attempt) ? styles.callDone : styles.callOpen}>{attempt}</span>)}
+        <span className={styles.muted}>{order.calls.length} of 2 recorded</span>
+      </div>
+      {order.calls.map((call) => <div className={styles.callResult} key={call.id}><strong>Call {call.attempt} · {outcomes[call.outcome]}</strong><span className={styles.timestamp}>{formatDate(call.createdAt)}</span></div>)}
+      {!terminal && order.status === "pending" && order.calls.length < 2 && <fetcher.Form method="post" className={styles.callForm}>
         <input type="hidden" name="id" value={order.id} /><input type="hidden" name="intent" value="call" />
         <input type="hidden" name="attempt" value={order.calls.length + 1} />
-        <label>Call {order.calls.length + 1} outcome <select name="outcome" defaultValue="" required disabled={busy}>
-          <option value="" disabled>Select outcome</option>{Object.entries(outcomes).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-        </select></label>{" "}<button type="submit" disabled={busy}>Record call</button>
+        <label className={styles.fieldLabel}>Call {order.calls.length + 1} outcome
+          <select key={order.calls.length} className={styles.select} name="outcome" defaultValue="" required disabled={busy}>
+            <option value="" disabled>Select outcome…</option>{Object.entries(outcomes).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+          </select>
+        </label>
+        <button className={styles.secondaryButton} type="submit" disabled={busy}>Save call result</button>
       </fetcher.Form>}
-      {callDue && !order.calls.length && <s-badge tone="warning">First call due</s-badge>}
-      {!terminal && order.calls.length === 1 && <s-paragraph>Second call to arrange</s-paragraph>}
-      {!terminal && order.calls.length === 2 && <s-paragraph>Both calls recorded — review manually</s-paragraph>}
-    </s-table-cell>
-    <s-table-cell>
-      {order.messages.map((message) => <s-paragraph key={message.id}>{message.kind}: {message.kind === "confirmed" && message.state === "queued" ? "Paused" : message.state === "accepted" ? "Accepted by WhatsApp" : message.state}{message.error && !(message.kind === "confirmed" && message.state === "queued") ? ` — ${message.error}` : ""}</s-paragraph>)}
-      {order.status === "pending" && !reminder && <s-paragraph>Reminder due {formatDate(order.reminderAt)}</s-paragraph>}
-      <s-button disabled={busy} onClick={() => fetcher.submit({ id: order.id, intent: "sync" }, { method: "post" })}>Sync Shopify status</s-button>
-      {fetcher.data && <s-paragraph tone={fetcher.data.ok ? "success" : "critical"}>{fetcher.data.message}</s-paragraph>}
-      <details><summary>History</summary>{order.events.map((event) => <p key={event.id}>{formatDate(event.createdAt)} — {event.detail}</p>)}</details>
-    </s-table-cell>
-  </s-table-row>;
+      {!order.calls.length && terminal && <p className={styles.muted}>No calls needed</p>}
+    </td>
+    <td>
+      <div className={styles.messageLine}><span className={`${styles.dot} ${request?.state === "accepted" ? styles.dotSuccess : styles.dotNeutral}`} />{request ? stateLabels[request.state] || request.state : "No request recorded"}</div>
+      {reminder && <p className={styles.muted}>Reminder · {stateLabels[reminder.state] || reminder.state}</p>}
+      {order.status === "pending" && !reminder && <p className={styles.muted}>Reminder due {formatDate(order.reminderAt)}</p>}
+      {hasError && <span className={styles.errorLabel}>Message needs attention</span>}
+      <details className={styles.details}>
+        <summary>Messages & history</summary>
+        {order.messages.map((message) => <p key={message.id}>{messageLabels[message.kind]}: {message.kind === "confirmed" && message.state === "queued" ? "Paused" : stateLabels[message.state] || message.state}{message.error && message.kind !== "confirmed" ? ` — ${message.error}` : ""}</p>)}
+        {order.events.length ? <ol className={styles.history}>{order.events.map((event) => <li key={event.id}><span className={styles.timestamp}>{formatDate(event.createdAt)}</span>{event.detail}</li>)}</ol> : <p>No status changes yet.</p>}
+      </details>
+    </td>
+    <td>
+      <div className={styles.rowActions}>
+        {!terminal && <button className={styles.primaryButton} disabled={busy} onClick={() => setStatus("confirmed")}>Confirm order</button>}
+        {!terminal && order.status !== "cancel_requested" && <button className={styles.cancelButton} disabled={busy} onClick={() => setStatus("cancel_requested")}>Request cancellation</button>}
+        {order.status === "cancel_requested" && <a className={styles.cancelLink} href={shopifyUrl} target="_blank" rel="noreferrer">Cancel in Shopify ↗</a>}
+        <button className={styles.textButton} disabled={busy} onClick={() => fetcher.submit({ id: order.id, intent: "sync" }, { method: "post" })}>{busy ? "Updating…" : "Sync with Shopify"}</button>
+      </div>
+      <div aria-live="polite">{fetcher.data && <p className={fetcher.data.ok ? styles.successText : styles.errorLabel}>{fetcher.data.ok ? "Order updated." : fetcher.data.message}</p>}</div>
+    </td>
+  </tr>;
 }
 
 export default function CodOrders() {
-  const { orders, total, page, search, status, enabled, shop, now } = useLoaderData<typeof loader>();
+  const { orders, total, page, search, status, task, summary, callsDue, enabled, shop, now } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
+  const refreshing = revalidator.state !== "idle";
   useEffect(() => {
     const timer = setInterval(() => { if (document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate(); }, 30_000);
     return () => clearInterval(timer);
   }, [revalidator]);
-  const pageUrl = (next: number) => `?${new URLSearchParams({ q: search, status, page: String(next) })}`;
+  const pageUrl = (next: number) => `?${new URLSearchParams({ q: search, status, task, page: String(next) })}`;
+  const views = [{ label: "All orders", status: "", task: "" }, { label: "Pending", status: "pending", task: "" },
+    { label: "Calls to make", status: "", task: "calls" }, { label: "Cancel requests", status: "cancel_requested", task: "" },
+    { label: "Confirmed", status: "confirmed", task: "" }, { label: "Cancelled", status: "cancelled", task: "" }];
+  const filtered = Boolean(search || status || task);
   return <s-page heading="COD orders" inlineSize="large">
-    <s-section heading="Confirmation and calling">
-      <s-paragraph>Monday–Saturday · 10:00–18:30 India time · One reminder after 3 business hours. Cancellations are manual in Shopify.</s-paragraph>
-      <s-stack direction="inline" gap="base">
-        <s-button onClick={() => revalidator.revalidate()}>Refresh table</s-button>
-      </s-stack>
-      <CodMessagingToggle enabled={enabled} />
-      <s-paragraph>Tracks new COD orders after enabling. Confirming an order permanently disables its YES / NO actions. Confirmation messages are currently paused.</s-paragraph>
-    </s-section>
-    <s-section heading={`${total} orders`}>
-      <Form method="get" style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-        <label>Search <input name="q" defaultValue={search} placeholder="Order, customer or phone" /></label>
-        <label>Status <select name="status" defaultValue={status}><option value="">All statuses</option>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <button type="submit">Filter</button>
-      </Form>
-      {!orders.length ? <s-paragraph>No matching COD orders yet.</s-paragraph> : <s-table>
-        <s-table-header-row><s-table-header>Order / customer</s-table-header><s-table-header>Order tag</s-table-header><s-table-header>Call tracking</s-table-header><s-table-header>Messages / history</s-table-header></s-table-header-row>
-        <s-table-body>{orders.map((order) => <OrderRow key={order.id} order={order} shop={shop} now={now} />)}</s-table-body>
-      </s-table>}
-      <div style={{ display: "flex", gap: 16, marginTop: 16 }}>{page > 1 && <Link to={pageUrl(page - 1)}>Previous</Link>}<span>Page {page}</span>{page * 25 < total && <Link to={pageUrl(page + 1)}>Next</Link>}</div>
-    </s-section>
+    <div className={styles.dashboard}>
+      <header className={styles.pageHeader}>
+        <div><p className={styles.eyebrow}>TANOTI · ORDER DESK</p><h1>Every order, a clear next step.</h1><p className={styles.subtitle}>Confirm COD orders, track calls, and keep your team in sync.</p></div>
+        <div className={styles.headerActions}><span className={`${styles.liveBadge} ${enabled ? styles.liveOn : styles.liveOff}`}><span className={styles.dot} />{enabled ? "COD messaging on" : "COD messaging paused"}</span><button className={styles.secondaryButton} disabled={refreshing} onClick={() => revalidator.revalidate()}>{refreshing ? "Refreshing…" : "↻ Refresh"}</button></div>
+      </header>
+
+      <div className={styles.metrics}>
+        <Link to="?status=pending" className={`${styles.metric} ${styles.metricAmber}`}><span>Awaiting confirmation</span><strong>{summary.pending || 0}</strong><small>Review pending orders <span aria-hidden="true">↗</span></small></Link>
+        <Link to="?task=calls" className={styles.metric}><span>Calls to make</span><strong>{callsDue}</strong><small>First calls due & second calls <span aria-hidden="true">↗</span></small></Link>
+        <Link to="?status=confirmed" className={`${styles.metric} ${styles.metricGreen}`}><span>Confirmed orders</span><strong>{summary.confirmed || 0}</strong><small>Customer confirmations <span aria-hidden="true">↗</span></small></Link>
+        <Link to="?status=cancel_requested" className={styles.metric}><span>Cancellation requests</span><strong>{summary.cancel_requested || 0}</strong><small>Needs a manual review <span aria-hidden="true">↗</span></small></Link>
+      </div>
+
+      <div className={styles.workInfo}><span>◷ Mon–Sat · 10:00–18:30 IST</span><span>One reminder after 3 business hours</span><span>Cancel orders manually in Shopify</span></div>
+
+      <section className={styles.orderPanel} aria-label="COD order queue">
+        <nav className={styles.tabs} aria-label="Order views">{views.map((view) => <Link key={view.label} to={`?${new URLSearchParams({ status: view.status, task: view.task, q: search })}`} className={`${styles.tab} ${status === view.status && task === view.task ? styles.activeTab : ""}`} aria-current={status === view.status && task === view.task ? "page" : undefined}>{view.label}</Link>)}</nav>
+        <Form method="get" className={styles.filters}>
+          <input type="hidden" name="status" value={status} /><input type="hidden" name="task" value={task} />
+          <label className={styles.searchLabel}><span className={styles.srOnly}>Search by order, customer or phone</span><input className={styles.search} key={search} name="q" defaultValue={search} placeholder="Search order, customer or phone…" /></label>
+          <button className={styles.secondaryButton} type="submit">Search</button>
+          {filtered && <Link className={styles.clearLink} to="/app/cod">Clear filters</Link>}
+          <span className={styles.resultCount} aria-live="polite">{total} {total === 1 ? "order" : "orders"}</span>
+        </Form>
+        {!orders.length ? <div className={styles.emptyState}><div className={styles.emptyIcon} aria-hidden="true">☷</div><h2>{filtered ? "No orders match this view" : "Your COD queue starts here"}</h2><p>{filtered ? "Try another search or switch to all orders." : enabled ? "New COD orders will appear here automatically." : "Enable COD WhatsApp messages below to start tracking new orders."}</p>{filtered && <Link className={styles.clearLink} to="/app/cod">View all orders</Link>}</div> :
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- Keyboard focus allows horizontal scrolling of the order table.
+          <div className={styles.tableScroll} role="region" aria-label="COD orders" tabIndex={0}><table className={styles.table}><caption className={styles.srOnly}>COD orders with customer details, status, call tracking, messages, and actions</caption>
+            <thead><tr><th scope="col">Order & customer</th><th scope="col">Status & next step</th><th scope="col">Call tracking</th><th scope="col">WhatsApp</th><th scope="col">Actions</th></tr></thead>
+            <tbody>{orders.map((order) => <OrderRow key={order.id} order={order} shop={shop} now={now} />)}</tbody>
+          </table></div>}
+        <footer className={styles.tableFooter}><span>{total ? `Showing ${(page - 1) * 25 + 1}–${Math.min(page * 25, total)} of ${total}` : "0 orders"} · Updates every 30 seconds</span><nav aria-label="Order pages" className={styles.pagination}>{page > 1 && <Link to={pageUrl(page - 1)}>← Previous</Link>}<span>Page {page}</span>{page * 25 < total && <Link to={pageUrl(page + 1)}>Next →</Link>}</nav></footer>
+      </section>
+
+      <details className={styles.messagingSettings}><summary>COD messaging settings <span>Manage automatic requests and reminders</span></summary><div className={styles.settingsContent}><CodMessagingToggle enabled={enabled} /><p className={styles.muted}>COD follow-up confirmation messages are paused. Prepaid order notifications are managed in <Link to="/app/settings">Messaging & marketing</Link>.</p></div></details>
+    </div>
   </s-page>;
 }
