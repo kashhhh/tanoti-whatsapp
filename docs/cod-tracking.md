@@ -1,6 +1,8 @@
 # COD order tracking
 
-Use **Enable COD WhatsApp messages** on the app home page or **COD orders** page to turn the flow on or off. This feature tracks new COD orders after it is enabled; it does not backfill old orders. The switch is independent of general WhatsApp notifications. Turning it off pauses new COD tracking and all outgoing COD messages for existing orders. History, status updates and replies to previously sent messages are preserved. Unsent messages stay queued and can resume through sync or the scheduled sweep after enabling again; messages already being sent may still arrive. Enabling validates permissions, credentials and approved templates; a setup error leaves the switch off.
+The app opens **COD orders** by default. Summary cards show pending orders, calls to make, confirmed orders and cancellation requests across your store. Use the tabs to select a queue, search by order number/customer/phone, and expand an order's details or message history when needed. General notification and marketing controls are in **Messaging & marketing**.
+
+Expand **COD messaging settings** on the COD page, or use the toggle in **Messaging & marketing**, to turn the flow on or off. This feature tracks new COD orders after it is enabled; it does not backfill old orders. The switch is independent of general WhatsApp notifications. Turning it off pauses new COD tracking and all outgoing COD messages for existing orders. History, status updates and replies to previously sent messages are preserved. Unsent messages stay queued and can resume through sync or the scheduled sweep after enabling again; messages already being sent may still arrive. Enabling validates permissions, credentials and approved templates; a setup error leaves the switch off.
 
 ## Staff workflow
 
@@ -14,7 +16,7 @@ Use **Enable COD WhatsApp messages** on the app home page or **COD orders** page
 - Reminder: one after three business hours from WhatsApp accepting the initial request. Calendar: Monday–Saturday, 10:00–18:30 Asia/Kolkata. Sundays are excluded; holidays are not configured. A delayed reminder is sent only during business hours. Initial requests are immediate, including outside calling hours.
 - Actual message delivery/read/failure tracking, courier control, fulfillment holds and partial prepayments are outside this feature.
 
-The table refreshes every 30 seconds while visible. **Sync Shopify status** reads Shopify immediately and retries template preparation if a message is still queued. History is stored in the app; unrelated Shopify tags and order notes are preserved.
+The table refreshes every 30 seconds while visible. **Sync with Shopify** reads Shopify immediately and retries template preparation if a message is still queued. **Calls to make** includes pending orders due for their first call and pending orders with one call recorded but no second call. History is stored in the app; unrelated Shopify tags and order notes are preserved.
 
 ## Deployment prerequisites
 
@@ -55,6 +57,6 @@ Order-level database leases serialize incoming replies, staff actions and backgr
 
 ## Verification
 
-Run `node --test tests/cod.test.mjs tests/cod-messages.test.mjs tests/whatsapp-template.test.mjs` for isolated database and mocked API tests. These tests apply SQL migrations to a temporary SQLite database; they do not contact customers or mutate a shop.
+Run `node --test tests/cod.test.mjs tests/cod-messages.test.mjs tests/orders-create.test.mjs tests/whatsapp-template.test.mjs` for isolated database and mocked API tests. These tests apply SQL migrations to a temporary SQLite database; they do not contact customers or mutate a shop. They also verify the COD landing redirect, dashboard counts, call queue and search filters stay scoped to the current store.
 
 Before enabling production, test one COD order and one prepaid order, same-phone multiple orders, direct Shopify confirmation, both call outcomes, repeated YES/NO, Sunday reminder timing, and a manual Shopify cancellation with approved templates on the real WhatsApp number.
