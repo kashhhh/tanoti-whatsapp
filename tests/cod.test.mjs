@@ -31,6 +31,12 @@ globalThis.__codTest = {
   db,
   authenticate: { admin: async () => ({ session: { shop }, redirect: (location) => new Response(null, { status: 302, headers: { Location: location } }) }) },
   unauthenticated: { admin: async () => ({ admin: { graphql: async (query, { variables }) => {
+    if (query.includes("query CodOrderTags")) {
+      return Response.json({ data: { nodes: variables.ids.map((id) => {
+        const state = states.get(id.split("/").pop());
+        return state ? { id, tags: [...state.tags] } : null;
+      }) } });
+    }
     const state = states.get(variables.id.split("/").pop());
     if (query.includes("query CodOrderState")) return Response.json({ data: { order: state ? { ...state, tags: [...state.tags] } : null } });
     if (query.includes("mutation CodAddTags")) variables.tags.forEach((tag) => state.tags.add(tag));
@@ -51,7 +57,9 @@ const source = readFileSync(new URL("../app/services/cod.server.ts", import.meta
   .replace('from "./cod-rules"', `from "${rulesUrl}"`)
   .replace(/import \{ prepareCodMessage[^\n]+/, 'const { prepareCodMessage, submitCodMessage } = globalThis.__codTest;');
 const service = await import(asModule(source));
+globalThis.__codTest.fetchCodOrderTags = service.fetchCodOrderTags;
 const dashboardSource = readFileSync(new URL("../app/routes/app.cod.tsx", import.meta.url), "utf8").split("export const action")[0]
+  .replace(/import \{[^\n]+from "\.\.\/services\/cod.server";/, 'const { fetchCodOrderTags } = globalThis.__codTest;')
   .replace('import db from "../db.server";', 'const db = globalThis.__codTest.db;')
   .replace('import { authenticate } from "../shopify.server";', 'const { authenticate } = globalThis.__codTest;');
 const { loader: dashboardLoader } = await import(asModule(dashboardSource));
@@ -301,4 +309,34 @@ test("dashboard counts, call queue and search remain scoped to the current shop"
   assert.equal((await load("?status=confirmed")).total, 1);
   assert.equal((await load("?status=cancel_requested&task=calls")).total, 0);
   assert.equal((await load("?status=__proto__")).total, 4);
+});
+
+
+test("dashboard and export fetch tags for existing orders with an empty cache", async () => {
+  const order = await create();
+  await db.codOrder.update({ where: { id: order.id }, data: { status: "confirmed", tags: "[]" } });
+  states.get("101").tags = new Set(["COD Confirmed", "High RTO Risk", "GoKwik"]);
+  const beforeSends = sends.length;
+  const data = await dashboardLoader({ request: new Request("https://example.com/app/cod") });
+  assert.deepEqual(JSON.parse(data.orders[0].tags), ["COD Confirmed", "High RTO Risk", "GoKwik"]);
+  assert.equal(data.orders[0].tags, data.exportOrders[0].tags);
+  assert.equal(data.tagSyncError, "");
+  assert.equal(sends.length, beforeSends);
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).tags, "[]");
+  states.get("101").tags = new Set();
+  const cleared = await dashboardLoader({ request: new Request("https://example.com/app/cod") });
+  assert.equal(cleared.exportOrders[0].tags, "[]");
+});
+
+test("tag fetch failure preserves cache and shows a warning", async () => {
+  await create();
+  const original = globalThis.__codTest.fetchCodOrderTags;
+  globalThis.__codTest.fetchCodOrderTags = async () => { throw new Error("Unavailable"); };
+  try {
+    // Re-import to bind the failing dependency for this request.
+    const { loader } = await import(asModule(dashboardSource + "\n// unavailable tag API"));
+    const data = await loader({ request: new Request("https://example.com/app/cod") });
+    assert.match(data.tagSyncError, /Could not refresh/);
+    assert.deepEqual(JSON.parse(data.exportOrders[0].tags), ["VIP", "COD Pending"]);
+  } finally { globalThis.__codTest.fetchCodOrderTags = original; }
 });

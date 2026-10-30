@@ -19,6 +19,7 @@ type IncomingReply = Parameters<typeof replyAction>[0] & {
 interface GraphqlResult {
   errors?: Array<{ message: string }>;
   data?: {
+    nodes?: Array<{ id: string; tags: string[] } | null>;
     order?: { id: string; tags: string[]; cancelledAt: string | null } | null;
     tagsAdd?: { userErrors: Array<{ message: string }> };
     tagsRemove?: { userErrors: Array<{ message: string }> };
@@ -243,4 +244,17 @@ export async function saveCodNotes(id: string, shop: string, notes: string) {
   if (notes.length > 5000) throw new Error("Notes must be 5,000 characters or fewer.");
   const result = await db.codOrder.updateMany({ where: { id, shop }, data: { notes } });
   if (!result.count) throw new Error("Order not found.");
+}
+
+// Read tags only: opening the dashboard must not trigger messages or status changes.
+export async function fetchCodOrderTags(shop: string, orderIds: string[]) {
+  const ids = [...new Set(orderIds)].map((id) => `gid://shopify/Order/${id}`);
+  if (!ids.length) return new Map<string, string>();
+  const data = await graphql(shop, `#graphql
+    query CodOrderTags($ids: [ID!]!) {
+      nodes(ids: $ids) { ... on Order { id tags } }
+    }`, { ids });
+  if (!data.nodes) throw new Error("Shopify did not return order tags.");
+  return new Map(data.nodes.filter((node): node is { id: string; tags: string[] } => Boolean(node && Array.isArray(node.tags)))
+    .map((node) => [node.id.split("/").pop()!, JSON.stringify(node.tags)]));
 }

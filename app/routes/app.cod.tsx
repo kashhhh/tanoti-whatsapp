@@ -3,7 +3,7 @@ import { Form, Link, useFetcher, useLoaderData, useRevalidator } from "react-rou
 import { useEffect, useState } from "react";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
-import { changeCodStatus, recordCodCall, saveCodNotes, syncCodOrder } from "../services/cod.server";
+import { changeCodStatus, fetchCodOrderTags, recordCodCall, saveCodNotes, syncCodOrder } from "../services/cod.server";
 import { messageKinds, prepareCodMessage } from "../services/cod-messages.server";
 import { CodMessagingToggle } from "../components/CodMessagingToggle";
 import styles from "../styles/cod.module.css";
@@ -49,11 +49,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       where: { shop: session.shop },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: 100,
-      select: { orderNumber: true, status: true, tags: true },
+      select: { orderId: true, orderNumber: true, status: true, tags: true },
     }),
   ]);
+  let tagSyncError = "";
+  const tagOrderIds = [...new Set([...orders, ...exportOrders].map((order) => order.orderId))];
+  try {
+    const tags = await fetchCodOrderTags(session.shop, tagOrderIds);
+    for (const order of [...orders, ...exportOrders]) {
+      const current = tags.get(order.orderId);
+      if (current !== undefined) order.tags = current;
+    }
+    if (tags.size < tagOrderIds.length) tagSyncError = "Some order tags could not be read from Shopify. Cached tags are shown for those orders.";
+  } catch {
+    tagSyncError = "Could not refresh order tags from Shopify. Table and export tags may be missing or outdated. Try again shortly.";
+  }
   const summary = Object.fromEntries(counts.map((count) => [count.status, count._count._all]));
-  return { orders, total, page, search, status, task, summary, callsDue, exportOrders, enabled: settings?.codEnabled ?? false, shop: session.shop, now: now.getTime() };
+  return { orders, total, page, search, status, task, summary, callsDue, exportOrders, tagSyncError, enabled: settings?.codEnabled ?? false, shop: session.shop, now: now.getTime() };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -186,7 +198,7 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
 }
 
 export default function CodOrders() {
-  const { orders, total, page, search, status, task, summary, callsDue, exportOrders, enabled, shop, now } = useLoaderData<typeof loader>();
+  const { orders, total, page, search, status, task, summary, callsDue, exportOrders, tagSyncError, enabled, shop, now } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
   const [copying, setCopying] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
@@ -242,6 +254,7 @@ export default function CodOrders() {
           {filtered && <Link className={styles.clearLink} to="/app/cod">Clear filters</Link>}
           <span className={styles.resultCount} aria-live="polite">{total} {total === 1 ? "order" : "orders"}</span>
         </Form>
+        {tagSyncError && <p className={styles.exportFeedback} role="alert">{tagSyncError}</p>}
         {exportMessage && <div className={styles.exportFeedback}>
           <p role="status">{exportMessage}</p>
           {manualExport && <textarea aria-label="Orders to copy" className={styles.search} value={manualExport} readOnly rows={5} ref={(element) => element?.select()} onFocus={(event) => event.currentTarget.select()} />}
