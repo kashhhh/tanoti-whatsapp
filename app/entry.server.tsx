@@ -6,6 +6,11 @@ import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
+import { startMarketingWorker } from "./services/marketing.server";
+
+// Starts when the production server imports its build, including after a restart.
+if (process.env.NODE_ENV === "production") startMarketingWorker();
+
 export const streamTimeout = 5000;
 
 export default async function handleRequest(

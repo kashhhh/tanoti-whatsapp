@@ -1,11 +1,12 @@
 import fs from "node:fs";
-import path from "node:path";
+import process from "node:process";
 import { createRequestHandler } from "@react-router/express";
 import compression from "compression";
 import express from "express";
 import morgan from "morgan";
 
 const BUILD_PATH = "./build/server/index.js";
+process.env.NODE_ENV ||= "production";
 const build = await import(BUILD_PATH);
 
 const app = express();

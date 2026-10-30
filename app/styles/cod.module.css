@@ -130,3 +130,5 @@
   .searchLabel { width: calc(100% - 80px); flex-grow: 1; }
   .messagingSettings > summary span { display: block; margin: 5px 0 0 16px; }
 }
+
+.exportFeedback { padding: 0 20px 16px; color: var(--green); font-size: 12px; }

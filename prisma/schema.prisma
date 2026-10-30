@@ -101,3 +101,37 @@ model AbandonedCheckout {
   converted     Boolean   @default(false)
   messaged      Boolean   @default(false)
 }
+
+model MarketingCampaign {
+  id          String @id @default(cuid())
+  shop        String
+  requestId   String
+  activeKey   String? @unique
+  segmentId   String
+  template    String
+  state       String @default("collecting")
+  cursor      String?
+  error       String?
+  lockToken   String?
+  lockUntil   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  recipients  MarketingRecipient[]
+  @@unique([shop, requestId])
+  @@index([state, createdAt])
+}
+
+model MarketingRecipient {
+  id          String @id @default(cuid())
+  campaignId  String
+  campaign    MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  customerId  String
+  phone       String?
+  phoneKey    String
+  state       String @default("queued")
+  messageId   String? @unique
+  error       String?
+  @@unique([campaignId, customerId])
+  @@unique([campaignId, phoneKey])
+  @@index([campaignId, state])
+}

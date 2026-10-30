@@ -289,6 +289,7 @@ export async function sendWhatsAppTemplate(
     `https://graph.facebook.com/v23.0/${phoneNumberId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(20_000),
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",

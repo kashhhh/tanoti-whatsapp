@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
 import { changeCodStatus, recordCodCall, syncCodOrder } from "../services/cod.server";
@@ -34,15 +34,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ...(search ? [{ OR: [{ orderNumber: { contains: search } }, { customerName: { contains: search } }, { phone: { contains: search } }] }] : []),
     ],
   };
-  const [orders, total, settings, counts, callsDue] = await Promise.all([
+  const [orders, total, settings, counts, callsDue, exportOrders] = await Promise.all([
     db.codOrder.findMany({ where, orderBy: { createdAt: "desc" }, take: 25, skip: (page - 1) * 25,
       include: { calls: { orderBy: { attempt: "asc" } }, messages: true, events: { orderBy: { createdAt: "desc" }, take: 10 } } }),
     db.codOrder.count({ where }), db.settings.findUnique({ where: { shop: session.shop } }),
     db.codOrder.groupBy({ by: ["status"], where: { shop: session.shop }, _count: { _all: true } }),
     db.codOrder.count({ where: callsWhere }),
+    db.codOrder.findMany({
+      where: { shop: session.shop },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 100,
+      select: { orderNumber: true, status: true },
+    }),
   ]);
   const summary = Object.fromEntries(counts.map((count) => [count.status, count._count._all]));
-  return { orders, total, page, search, status, task, summary, callsDue, enabled: settings?.codEnabled ?? false, shop: session.shop, now: now.getTime() };
+  return { orders, total, page, search, status, task, summary, callsDue, exportOrders, enabled: settings?.codEnabled ?? false, shop: session.shop, now: now.getTime() };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -156,9 +162,32 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
 }
 
 export default function CodOrders() {
-  const { orders, total, page, search, status, task, summary, callsDue, enabled, shop, now } = useLoaderData<typeof loader>();
+  const { orders, total, page, search, status, task, summary, callsDue, exportOrders, enabled, shop, now } = useLoaderData<typeof loader>();
   const revalidator = useRevalidator();
-  const refreshing = revalidator.state !== "idle";
+  const [copying, setCopying] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
+  const [manualExport, setManualExport] = useState("");
+  const exportToClipboard = async () => {
+    // Tabs and newlines paste directly into two Google Sheets columns.
+    const cell = (value: string) => {
+      const cleaned = value.replace(/[\t\r\n]/g, " ");
+      return /^[=+\-@]/.test(cleaned) ? `'${cleaned}` : cleaned;
+    };
+    const text = ["Order ID\tStatus", ...exportOrders.map((order) =>
+      `${cell(order.orderNumber)}\t${cell(labels[order.status] || order.status)}`,
+    )].join("\n");
+    setCopying(true);
+    setManualExport("");
+    try {
+      await navigator.clipboard.writeText(text);
+      setExportMessage(`Copied ${exportOrders.length} orders, newest first. Paste into Google Sheets.`);
+    } catch {
+      setManualExport(text);
+      setExportMessage("Clipboard access was blocked. Copy the selected text below and paste into Google Sheets.");
+    } finally {
+      setCopying(false);
+    }
+  };
   useEffect(() => {
     const timer = setInterval(() => { if (document.visibilityState === "visible" && revalidator.state === "idle") revalidator.revalidate(); }, 30_000);
     return () => clearInterval(timer);
@@ -170,11 +199,6 @@ export default function CodOrders() {
   const filtered = Boolean(search || status || task);
   return <s-page heading="COD orders" inlineSize="large">
     <div className={styles.dashboard}>
-      <header className={styles.pageHeader}>
-        <div><p className={styles.eyebrow}>TANOTI · ORDER DESK</p><h1>Every order, a clear next step.</h1><p className={styles.subtitle}>Confirm COD orders, track calls, and keep your team in sync.</p></div>
-        <div className={styles.headerActions}><span className={`${styles.liveBadge} ${enabled ? styles.liveOn : styles.liveOff}`}><span className={styles.dot} />{enabled ? "COD messaging on" : "COD messaging paused"}</span><button className={styles.secondaryButton} disabled={refreshing} onClick={() => revalidator.revalidate()}>{refreshing ? "Refreshing…" : "↻ Refresh"}</button></div>
-      </header>
-
       <div className={styles.metrics}>
         <Link to="?status=pending" className={`${styles.metric} ${styles.metricAmber}`}><span>Awaiting confirmation</span><strong>{summary.pending || 0}</strong><small>Review pending orders <span aria-hidden="true">↗</span></small></Link>
         <Link to="?task=calls" className={styles.metric}><span>Calls to make</span><strong>{callsDue}</strong><small>First calls due & second calls <span aria-hidden="true">↗</span></small></Link>
@@ -190,9 +214,14 @@ export default function CodOrders() {
           <input type="hidden" name="status" value={status} /><input type="hidden" name="task" value={task} />
           <label className={styles.searchLabel}><span className={styles.srOnly}>Search by order, customer or phone</span><input className={styles.search} key={search} name="q" defaultValue={search} placeholder="Search order, customer or phone…" /></label>
           <button className={styles.secondaryButton} type="submit">Search</button>
+          <button className={styles.secondaryButton} type="button" disabled={copying || !exportOrders.length} onClick={exportToClipboard} title="Copy the latest 100 COD orders across all views, newest first">{copying ? "Copying..." : "Export"}</button>
           {filtered && <Link className={styles.clearLink} to="/app/cod">Clear filters</Link>}
           <span className={styles.resultCount} aria-live="polite">{total} {total === 1 ? "order" : "orders"}</span>
         </Form>
+        {exportMessage && <div className={styles.exportFeedback}>
+          <p role="status">{exportMessage}</p>
+          {manualExport && <textarea aria-label="Orders to copy" className={styles.search} value={manualExport} readOnly rows={5} ref={(element) => element?.select()} onFocus={(event) => event.currentTarget.select()} />}
+        </div>}
         {!orders.length ? <div className={styles.emptyState}><div className={styles.emptyIcon} aria-hidden="true">☷</div><h2>{filtered ? "No orders match this view" : "Your COD queue starts here"}</h2><p>{filtered ? "Try another search or switch to all orders." : enabled ? "New COD orders will appear here automatically." : "Enable COD WhatsApp messages below to start tracking new orders."}</p>{filtered && <Link className={styles.clearLink} to="/app/cod">View all orders</Link>}</div> :
           // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- Keyboard focus allows horizontal scrolling of the order table.
           <div className={styles.tableScroll} role="region" aria-label="COD orders" tabIndex={0}><table className={styles.table}><caption className={styles.srOnly}>COD orders with customer details, status, call tracking, messages, and actions</caption>

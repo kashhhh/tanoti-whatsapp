@@ -10,12 +10,18 @@ import db from "../db.server";
 import { CodMessagingToggle } from "../components/CodMessagingToggle";
 import {
   prepareWhatsAppTemplate,
-  sendWhatsAppTemplate,
   type WhatsAppTemplatePayload,
 } from "app/services/whatsapp.server";
 import { useEffect, useState } from "react";
+import { randomUUID } from "node:crypto";
+import {
+  enqueueMarketing,
+  campaignProgress,
+  startMarketingWorker,
+} from "../services/marketing.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  startMarketingWorker();
   const { admin, session } = await authenticate.admin(request);
 
   const response = await admin.graphql(
@@ -50,11 +56,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const responseJson = await response.json();
   const latestOrder = responseJson.data?.orders?.edges?.[0]?.node ?? null;
 
-  const segments =
-    responseJson.data?.segments?.edges?.map((edge: any) => ({
-      id: edge.node.id,
-      name: edge.node.name,
-    })) ?? [];
+  const segments: Array<{ id: string; name: string }> =
+    responseJson.data?.segments?.edges?.map(
+      (edge: { node: { id: string; name: string } }) => ({
+        id: edge.node.id,
+        name: edge.node.name,
+      }),
+    ) ?? [];
 
   const settings = await db.settings.upsert({
     where: { shop: session.shop },
@@ -66,6 +74,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   return {
+    campaigns: await campaignProgress(session.shop),
     latestOrder,
     whatsappEnabled: settings.whatsappEnabled,
     codEnabled: settings.codEnabled,
@@ -97,7 +106,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return {
         intent: "checkSegment" as const,
         ok: false as const,
-        message: error instanceof Error ? error.message : "Could not validate the WhatsApp template. Please try again.",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not validate the WhatsApp template. Please try again.",
       };
     }
 
@@ -114,7 +126,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const countJson = await countResponse.json();
     const count = countJson.data?.customerSegmentMembers?.totalCount ?? 0;
 
-    return { intent: "checkSegment" as const, ok: true as const, count, segmentId, templateName, imageUrl, language: template.language.code };
+    return {
+      intent: "checkSegment" as const,
+      ok: true as const,
+      count,
+      segmentId,
+      templateName,
+      imageUrl,
+      language: template.language.code,
+      requestId: randomUUID(),
+    };
   }
   if (intent === "toggleWhatsapp") {
     const whatsappEnabled = formData.get("whatsappEnabled") === "true";
@@ -146,130 +167,69 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return {
         intent: "sendMarketing" as const,
         ok: false,
-        message: error instanceof Error ? error.message : "Could not validate the WhatsApp template. Please try again.",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Could not validate the WhatsApp template. Please try again.",
       };
     }
 
-    const { admin } = await authenticate.admin(request);
-
-    const membersResponse = await admin.graphql(
-      `#graphql
-      query getSegmentMembers($segmentId: ID) {
-        customerSegmentMembers(segmentId: $segmentId, first: 250) {
-          edges {
-            node {
-              id
-              defaultPhoneNumber {
-                phoneNumber
-              }
-            }
-          }
-        }
-      }`,
-      { variables: { segmentId } },
-    );
-    const membersJson = await membersResponse.json();
-    const members = membersJson.data?.customerSegmentMembers?.edges ?? [];
-
-    // Fallback: fetch address phone for members missing defaultPhoneNumber
-    const needsFallback = members.filter(
-      (e: any) => !e.node.defaultPhoneNumber?.phoneNumber,
-    );
-    const fallbackMap: Record<string, string> = {};
-
-    if (needsFallback.length > 0) {
-      const ids = needsFallback.map(
-        (e: any) => `gid://shopify/Customer/${e.node.id.split("/").pop()}`,
+    try {
+      const campaign = await enqueueMarketing(
+        session.shop,
+        String(formData.get("requestId") ?? ""),
+        segmentId,
+        template,
       );
-      const custResponse = await admin.graphql(
-        `#graphql
-        query getFallbackPhones($ids: [ID!]!) {
-          nodes(ids: $ids) {
-            ... on Customer {
-              id
-              defaultAddress {
-                phone
-              }
-            }
-          }
-        }`,
-        { variables: { ids } },
-      );
-      const custJson = await custResponse.json();
-      for (const node of custJson.data?.nodes ?? []) {
-        if (node?.defaultAddress?.phone) {
-          fallbackMap[node.id] = node.defaultAddress.phone;
-        }
-      }
+      return {
+        intent: "sendMarketing" as const,
+        ok: true,
+        message: `Campaign ${campaign.id} queued. Sending continues in the background; progress is shown below.`,
+      };
+    } catch (error) {
+      return {
+        intent: "sendMarketing" as const,
+        ok: false,
+        message:
+          error instanceof Error ? error.message : "Could not queue campaign.",
+      };
     }
-
-    let sent = 0;
-    let failed = 0;
-    let skipped = 0;
-    const errors = new Set<string>();
-
-    for (const edge of members) {
-      const customerId = `gid://shopify/Customer/${edge.node.id.split("/").pop()}`;
-      const phone =
-        edge.node.defaultPhoneNumber?.phoneNumber ?? fallbackMap[customerId];
-
-      if (!phone) {
-        skipped++;
-        continue;
-      }
-
-      try {
-        const result = await sendWhatsAppTemplate(phone, template);
-        if (result.success) sent++;
-        else {
-          failed++;
-          errors.add(result.error ?? "WhatsApp request failed.");
-        }
-      } catch (error) {
-        failed++;
-        errors.add(error instanceof Error ? error.message : "Could not contact WhatsApp.");
-      }
-      await new Promise((r) => setTimeout(r, 300));
-    }
-
-    return {
-      intent: "sendMarketing" as const,
-      ok: failed === 0,
-      message: `Accepted by WhatsApp: ${sent}, Failed: ${failed}, Skipped (no phone): ${skipped}. ${[...errors].slice(0, 3).join(" ")}${sent > 0 ? " Delivery is confirmed separately by WhatsApp status updates." : ""}`,
-    };
+  }
+  if (intent === "resumeMarketing") {
+    const id = String(formData.get("campaignId") ?? "");
+    // A paused campaign only occurs during collection; sent/unknown recipients are never requeued.
+    await db.marketingCampaign.updateMany({
+      where: { id, shop: session.shop, state: "paused", lockToken: null },
+      data: { state: "collecting", error: null },
+    });
+    return { intent: "resumeMarketing" as const };
   }
 
   return { intent: null };
 };
 
 export default function Index() {
-  const { latestOrder, whatsappEnabled, codEnabled, segments } =
+  const { latestOrder, whatsappEnabled, codEnabled, segments, campaigns } =
     useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const marketingFetcher = useFetcher<typeof action>();
-
-  const [pendingSend, setPendingSend] = useState<{
-    segmentId: string;
-    templateName: string;
-    imageUrl: string;
-    language: string;
-    count: number;
-  } | null>(null);
-
+  const progressFetcher = useFetcher<{ campaigns: typeof campaigns }>();
+  const progress = progressFetcher.data?.campaigns ?? campaigns;
   useEffect(() => {
-    if (
-      marketingFetcher.data?.intent === "checkSegment" &&
-      marketingFetcher.data.ok
-    ) {
-      setPendingSend({
-        segmentId: marketingFetcher.data.segmentId,
-        templateName: marketingFetcher.data.templateName,
-        imageUrl: marketingFetcher.data.imageUrl,
-        language: marketingFetcher.data.language,
-        count: marketingFetcher.data.count,
-      });
-    }
-  }, [marketingFetcher.data]);
+    const timer = setInterval(() => {
+      if (progressFetcher.state === "idle")
+        progressFetcher.load(`/app/marketing-status${window.location.search}`);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [progressFetcher]);
+
+  const [dismissedPreview, setDismissedPreview] = useState("");
+  const pendingSend =
+    marketingFetcher.data?.intent === "checkSegment" &&
+    marketingFetcher.data.ok &&
+    marketingFetcher.data.requestId !== dismissedPreview
+      ? marketingFetcher.data
+      : null;
 
   const currentEnabled =
     fetcher.formData?.get("whatsappEnabled") === "true"
@@ -341,11 +301,57 @@ export default function Index() {
         )}
       </s-section>
 
+      <s-section heading="Campaign progress">
+        <s-paragraph>
+          Progress refreshes automatically. Accepted means WhatsApp received the
+          request; delivery is confirmed separately. Counts are for unique phone
+          numbers, with missing phones counted separately.
+        </s-paragraph>
+        {progress.length === 0 && (
+          <s-paragraph>No campaigns queued yet.</s-paragraph>
+        )}
+        {progress.map((campaign) => (
+          <div key={campaign.id}>
+            <s-paragraph>
+              {campaign.templateName}: {campaign.state}. Recipients collected:{" "}
+              {campaign.total}.
+            </s-paragraph>
+            <s-paragraph>
+              Queued: {campaign.counts.queued ?? 0}; Sending:{" "}
+              {campaign.counts.sending ?? 0}; Accepted:{" "}
+              {campaign.counts.accepted ?? 0}; Failed:{" "}
+              {campaign.counts.failed ?? 0}; Skipped:{" "}
+              {campaign.counts.skipped ?? 0}; Needs review:{" "}
+              {campaign.counts.unknown ?? 0}.
+            </s-paragraph>
+            {campaign.error && <s-paragraph>{campaign.error}</s-paragraph>}
+            {(campaign.counts.unknown ?? 0) > 0 && (
+              <s-paragraph>
+                Some sends could not be confirmed. Check Meta records before
+                sending these again.
+              </s-paragraph>
+            )}
+            {campaign.state === "paused" && (
+              <s-button
+                onClick={() =>
+                  marketingFetcher.submit(
+                    { intent: "resumeMarketing", campaignId: campaign.id },
+                    { method: "POST" },
+                  )
+                }
+              >
+                Resume campaign
+              </s-button>
+            )}
+          </div>
+        ))}
+      </s-section>
+
       <s-section heading="WhatsApp Marketing">
         <s-stack direction="block" gap="base">
           <s-select label="Customer segment" name="segmentId">
             <s-option value="">Select a segment</s-option>
-            {segments.map((seg: any) => (
+            {segments.map((seg) => (
               <s-option key={seg.id} value={seg.id}>
                 {seg.name}
               </s-option>
@@ -364,20 +370,27 @@ export default function Index() {
             placeholder="https://your-store.com/sale-image.jpg"
           />
           <s-text>
-            Required for templates with an image header. Use a public link to the image itself.
-            The approved template language is selected automatically.
+            Required for templates with an image header. Use a public link to
+            the image itself. The approved template language is selected
+            automatically.
           </s-text>
 
           <s-button
             variant="primary"
-            onClick={(e: any) => {
-              setPendingSend(null);
-              const fields = e.target
-                .closest("s-section")
-                .querySelectorAll("s-select, s-text-field");
+            onClick={(e) => {
+              setDismissedPreview(pendingSend?.requestId ?? "");
+              const section = (e.currentTarget as HTMLElement).closest(
+                "s-section",
+              );
+              if (!section) return;
+              const fields = section.querySelectorAll("s-select, s-text-field");
               const data: Record<string, string> = { intent: "checkSegment" };
-              fields.forEach((el: any) => {
-                if (el.name) data[el.name] = el.value;
+              fields.forEach((el) => {
+                const field = el as HTMLElement & {
+                  name: string;
+                  value: string;
+                };
+                if (field.name) data[field.name] = field.value;
               });
               marketingFetcher.submit(data, { method: "POST" });
             }}
@@ -387,7 +400,9 @@ export default function Index() {
           </s-button>
 
           {marketingFetcher.data?.intent === "sendMarketing" && (
-            <s-text tone={marketingFetcher.data.ok ? undefined : "critical"}>{marketingFetcher.data.message}</s-text>
+            <s-text tone={marketingFetcher.data.ok ? undefined : "critical"}>
+              {marketingFetcher.data.message}
+            </s-text>
           )}
           {marketingFetcher.data?.intent === "checkSegment" &&
             !marketingFetcher.data.ok && (
@@ -397,8 +412,10 @@ export default function Index() {
             <s-banner tone="warning">
               <s-stack direction="block" gap="small">
                 <s-text>
-                  This will send "{pendingSend.templateName}" ({pendingSend.language}) to{" "}
-                  <strong>{pendingSend.count}</strong> customers. This cannot be
+                  This will queue &quot;{pendingSend.templateName}&quot; (
+                  {pendingSend.language}) to{" "}
+                  <strong>{pendingSend.count}</strong> customers. Shared phone
+                  numbers receive one message per campaign. This cannot be
                   undone.
                 </s-text>
                 <s-stack direction="inline" gap="base">
@@ -409,18 +426,21 @@ export default function Index() {
                       marketingFetcher.submit(
                         {
                           intent: "sendMarketing",
+                          requestId: pendingSend.requestId,
                           templateName: pendingSend.templateName,
                           segmentId: pendingSend.segmentId,
                           imageUrl: pendingSend.imageUrl,
                         },
                         { method: "POST" },
                       );
-                      setPendingSend(null);
+                      setDismissedPreview(pendingSend?.requestId ?? "");
                     }}
                   >
                     Confirm Send
                   </s-button>
-                  <s-button onClick={() => setPendingSend(null)}>
+                  <s-button
+                    onClick={() => setDismissedPreview(pendingSend.requestId)}
+                  >
                     Cancel
                   </s-button>
                 </s-stack>
