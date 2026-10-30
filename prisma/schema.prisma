@@ -45,6 +45,8 @@ model CodOrder {
   address        String
   status         String   @default("pending")
   method         String?
+  notes          String   @default("")
+  tags           String   @default("[]")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   reminderAt     DateTime

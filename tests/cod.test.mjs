@@ -178,12 +178,46 @@ test("call attempts are ordered and no answer never confirms or cancels", async 
   assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "pending");
   assert.equal(await db.codCall.count(), 2);
 });
-test("phone confirmation is recorded once while its message remains paused", async () => {
+test("call outcomes are limited and never change order status", async () => {
   const order = await create();
-  await service.recordCodCall(order.id, shop, 1, "confirmed", "Staff");
-  await service.recordCodCall(order.id, shop, 1, "confirmed", "Staff");
-  assert.equal(await db.codCall.count(), 1);
-  assert.equal(sends.filter((send) => send.kind === "confirmed").length, 0);
+  for (const outcome of ["confirmed", "declined", "callback", "invalid"]) {
+    await assert.rejects(service.recordCodCall(order.id, shop, 1, outcome, "Staff"), /Invalid call outcome/);
+  }
+  await service.recordCodCall(order.id, shop, 1, "not_connected", "Staff");
+  await service.recordCodCall(order.id, shop, 2, "two_calls", "Staff");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).status, "pending");
+  const second = await create("102");
+  await service.recordCodCall(second.id, shop, 1, "one_call", "Staff");
+  await service.recordCodCall(second.id, shop, 1, "one_call", "Staff");
+  assert.equal(await db.codCall.count({ where: { codId: second.id } }), 1);
+});
+
+test("notes persist, clear, and enforce shop ownership and size", async () => {
+  const order = await create();
+  await service.saveCodNotes(order.id, shop, "Call after 5pm\nCheck address");
+  await assert.rejects(service.saveCodNotes(order.id, "other.myshopify.com", "Overwrite"), /Order not found/);
+  await assert.rejects(service.saveCodNotes(order.id, shop, "x".repeat(5001)), /5,000/);
+  await service.syncCodOrder(order.id);
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).notes, "Call after 5pm\nCheck address");
+  await service.saveCodNotes(order.id, shop, "");
+  assert.equal((await db.codOrder.findUnique({ where: { id: order.id } })).notes, "");
+});
+
+test("all tags refresh and export preserves risk tags after status changes", async () => {
+  const order = await create();
+  states.get("101").tags.add("High RTO Risk");
+  states.get("101").tags.add("GoKwik");
+  await service.syncCodOrder(order.id);
+  let stored = await db.codOrder.findUnique({ where: { id: order.id } });
+  assert.deepEqual(JSON.parse(stored.tags).sort(), ["COD Pending", "GoKwik", "High RTO Risk", "VIP"]);
+  await service.changeCodStatus(order.id, shop, "confirmed", "Staff");
+  stored = await db.codOrder.findUnique({ where: { id: order.id } });
+  assert.deepEqual(JSON.parse(stored.tags).sort(), ["COD Confirmed", "GoKwik", "High RTO Risk", "VIP"]);
+  const data = await dashboardLoader({ request: new Request("https://app.example/app/cod") });
+  assert.equal(data.exportOrders[0].tags, stored.tags);
+  states.get("101").tags.delete("High RTO Risk");
+  await service.syncCodOrder(order.id);
+  assert.equal(JSON.parse((await db.codOrder.findUnique({ where: { id: order.id } })).tags).includes("High RTO Risk"), false);
 });
 test("unknown message acceptance cannot produce automatic duplicate sends", async () => {
   sendMode = "unknown";

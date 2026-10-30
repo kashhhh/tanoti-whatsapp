@@ -3,13 +3,18 @@ import { Form, Link, useFetcher, useLoaderData, useRevalidator } from "react-rou
 import { useEffect, useState } from "react";
 import db from "../db.server";
 import { authenticate } from "../shopify.server";
-import { changeCodStatus, recordCodCall, syncCodOrder } from "../services/cod.server";
+import { changeCodStatus, recordCodCall, saveCodNotes, syncCodOrder } from "../services/cod.server";
 import { messageKinds, prepareCodMessage } from "../services/cod-messages.server";
 import { CodMessagingToggle } from "../components/CodMessagingToggle";
 import styles from "../styles/cod.module.css";
 
 const labels: Record<string, string> = { pending: "COD Pending", confirmed: "COD Confirmed", cancel_requested: "COD Cancel Requested", cancelled: "COD Cancelled" };
-const outcomes: Record<string, string> = { no_answer: "No answer", confirmed: "Confirmed", declined: "Declined", callback: "Call back later" };
+const outcomes: Record<string, string> = { no_answer: "No answer", not_connected: "Not connected", one_call: "1 call", two_calls: "2 calls" };
+const legacyOutcomes: Record<string, string> = { confirmed: "Confirmed", declined: "Declined", callback: "Call back later" };
+function orderTags(raw: string): string[] {
+  try { const tags: unknown = JSON.parse(raw); return Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === "string") : []; }
+  catch { return []; }
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -44,7 +49,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       where: { shop: session.shop },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: 100,
-      select: { orderNumber: true, status: true },
+      select: { orderNumber: true, status: true, tags: true },
     }),
   ]);
   const summary = Object.fromEntries(counts.map((count) => [count.status, count._count._all]));
@@ -77,6 +82,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await changeCodStatus(id, session.shop, status, actor);
     } else if (intent === "call") {
       await recordCodCall(id, session.shop, Number(form.get("attempt")), String(form.get("outcome")), actor);
+    } else if (intent === "notes") {
+      await saveCodNotes(id, session.shop, String(form.get("notes") || ""));
+      return { ok: true, message: "Notes saved." };
     } else if (intent === "sync") {
       await syncCodOrder(id);
     } else throw new Error("Unknown action.");
@@ -87,6 +95,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 type Row = Awaited<ReturnType<typeof loader>>["orders"][number];
 function formatDate(date: Date | string) {
   return new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(new Date(date));
+}
+
+function OrderNotes({ order }: { order: Row }) {
+  const fetcher = useFetcher<typeof action>();
+  const [notes, setNotes] = useState(order.notes);
+  const busy = fetcher.state !== "idle";
+  return <fetcher.Form method="post" className={styles.callForm}>
+    <input type="hidden" name="id" value={order.id} /><input type="hidden" name="intent" value="notes" />
+    <label className={styles.fieldLabel}>Notes
+      <textarea className={styles.notes} name="notes" rows={3} maxLength={5000} value={notes} disabled={busy} onChange={(event) => setNotes(event.target.value)} placeholder="Add specific details..." />
+    </label>
+    <button className={styles.secondaryButton} type="submit" disabled={busy || notes === order.notes}>{busy ? "Saving..." : "Save notes"}</button>
+    <div aria-live="polite">{fetcher.data && <span className={fetcher.data.ok ? styles.successText : styles.errorLabel}>{fetcher.data.message}</span>}</div>
+  </fetcher.Form>;
 }
 
 function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number }) {
@@ -112,6 +134,8 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
       <div className={styles.customerName}>{order.customerName}</div>
       {order.phone ? <a className={styles.phone} href={`tel:+${order.phone}`}>+{order.phone}</a> : <span className={styles.muted}>No phone number</span>}
       <div className={styles.timestamp}>{formatDate(order.createdAt)}</div>
+      <div className={styles.tags} aria-label="Order tags">{orderTags(order.tags).map((tag) => <span key={tag} className={styles.orderTag}>{tag}</span>)}</div>
+      <OrderNotes key={order.notes} order={order} />
       <details className={styles.details}><summary>Order details</summary><p>{order.products || "No items recorded"}</p><p>{order.address || "No address recorded"}</p></details>
     </td>
     <td>
@@ -125,7 +149,7 @@ function OrderRow({ order, shop, now }: { order: Row; shop: string; now: number 
         {[1, 2].map((attempt) => <span key={attempt} className={order.calls.some((call) => call.attempt === attempt) ? styles.callDone : styles.callOpen}>{attempt}</span>)}
         <span className={styles.muted}>{order.calls.length} of 2 recorded</span>
       </div>
-      {order.calls.map((call) => <div className={styles.callResult} key={call.id}><strong>Call {call.attempt} · {outcomes[call.outcome]}</strong><span className={styles.timestamp}>{formatDate(call.createdAt)}</span></div>)}
+      {order.calls.map((call) => <div className={styles.callResult} key={call.id}><strong>Call {call.attempt} · {outcomes[call.outcome] || legacyOutcomes[call.outcome] || call.outcome}</strong><span className={styles.timestamp}>{formatDate(call.createdAt)}</span></div>)}
       {!terminal && order.status === "pending" && order.calls.length < 2 && <fetcher.Form method="post" className={styles.callForm}>
         <input type="hidden" name="id" value={order.id} /><input type="hidden" name="intent" value="call" />
         <input type="hidden" name="attempt" value={order.calls.length + 1} />
@@ -168,13 +192,13 @@ export default function CodOrders() {
   const [exportMessage, setExportMessage] = useState("");
   const [manualExport, setManualExport] = useState("");
   const exportToClipboard = async () => {
-    // Tabs and newlines paste directly into two Google Sheets columns.
+    // Tabs and newlines paste directly into Google Sheets columns.
     const cell = (value: string) => {
       const cleaned = value.replace(/[\t\r\n]/g, " ");
       return /^[=+\-@]/.test(cleaned) ? `'${cleaned}` : cleaned;
     };
-    const text = ["Order ID\tStatus", ...exportOrders.map((order) =>
-      `${cell(order.orderNumber)}\t${cell(labels[order.status] || order.status)}`,
+    const text = ["Order ID\tStatus\tTags", ...exportOrders.map((order) =>
+      `${cell(order.orderNumber)}\t${cell(labels[order.status] || order.status)}\t${cell(orderTags(order.tags).join(" | "))}`,
     )].join("\n");
     setCopying(true);
     setManualExport("");

@@ -76,6 +76,8 @@ async function setStatus(order: CodOrder, status: CodStatus, method: string) {
   if (!tags.includes(COD_TAGS[status])) await graphql(order.shop, ADD_TAGS, { id: gid, tags: [COD_TAGS[status]] });
   const stale = Object.values(COD_TAGS).filter((tag) => tag !== COD_TAGS[status] && tags.includes(tag));
   if (stale.length) await graphql(order.shop, REMOVE_TAGS, { id: gid, tags: stale });
+  const updatedTags = JSON.stringify([...new Set([...tags.filter((tag) => !stale.some((staleTag) => staleTag === tag)), COD_TAGS[status]])]);
+  await db.codOrder.update({ where: { id: order.id }, data: { tags: updatedTags } });
   if (order.status !== status) {
     await db.codOrder.update({ where: { id: order.id }, data: { status, method } });
     await record(order.id, `${COD_TAGS[status]} — ${method}`);
@@ -126,6 +128,7 @@ async function reconcile(order: CodOrder) {
   const data = await graphql(order.shop, ORDER_QUERY, { id: `gid://shopify/Order/${order.orderId}` });
   if (!data.order) throw new Error("Order is no longer accessible in Shopify.");
   const tags: string[] = data.order.tags;
+  await db.codOrder.update({ where: { id: order.id }, data: { tags: JSON.stringify(tags) } });
   if (data.order.cancelledAt || order.status === "cancelled") {
     await setStatus(order, "cancelled", "Cancelled manually in Shopify");
     await sendOnce(order, "cancelled");
@@ -181,7 +184,7 @@ export async function changeCodStatus(id: string, shop: string, status: "confirm
 }
 
 export async function recordCodCall(id: string, shop: string, attempt: number, outcome: string, actor: string) {
-  if (![1, 2].includes(attempt) || !["no_answer", "confirmed", "declined", "callback"].includes(outcome)) throw new Error("Invalid call outcome.");
+  if (![1, 2].includes(attempt) || !["no_answer", "not_connected", "one_call", "two_calls"].includes(outcome)) throw new Error("Invalid call outcome.");
   return withOrder(id, async (order) => {
     if (order.shop !== shop) throw new Error("Order not found.");
     await reconcile(order);
@@ -193,10 +196,6 @@ export async function recordCodCall(id: string, shop: string, attempt: number, o
       await db.codCall.create({ data: { codId: id, attempt, outcome, actor } });
       await record(id, `Call ${attempt}: ${outcome} — ${actor}`);
     }
-    if (outcome === "confirmed") {
-      await setStatus(order, "confirmed", `Phone — ${actor}`);
-      await sendOnce(order, order.status === "cancelled" ? "cancelled" : "confirmed");
-    } else if (outcome === "declined") await setStatus(order, "cancel_requested", `Phone — ${actor}`);
   });
 }
 
@@ -238,4 +237,10 @@ export async function sweepCodOrders() {
     } catch (error) { console.error("COD sweep order failed", order.id, error instanceof Error ? error.message : "Unknown error"); }
   }
   return processed;
+}
+
+export async function saveCodNotes(id: string, shop: string, notes: string) {
+  if (notes.length > 5000) throw new Error("Notes must be 5,000 characters or fewer.");
+  const result = await db.codOrder.updateMany({ where: { id, shop }, data: { notes } });
+  if (!result.count) throw new Error("Order not found.");
 }
